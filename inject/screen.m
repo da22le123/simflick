@@ -4,9 +4,13 @@
 #import <sys/socket.h>
 #import <netinet/in.h>
 #import <pthread.h>
+#import <dlfcn.h>
+#import <objc/message.h>
 
+// NSJSONSerialization throws (crashing the host app) on NaN/inf, which empty or broken frames contain.
+static NSNumber *N(CGFloat v) { return @(isfinite(v) ? round(v) : 0); }
 static NSArray<NSNumber *> *R(CGRect r) {
-  return @[@(round(r.origin.x)), @(round(r.origin.y)), @(round(r.size.width)), @(round(r.size.height))];
+  return @[N(r.origin.x), N(r.origin.y), N(r.size.width), N(r.size.height)];
 }
 
 static NSArray<UIWindow *> *Windows(void) {
@@ -46,6 +50,7 @@ static NSString *NearestId(UIView *v) {
 }
 
 NSData *SRHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q);
+static NSMutableArray *gRejects;  // filled only for /screen?debug=1
 
 typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn, *ahead; NSMutableArray *hidden, *axTexts, *remote; UIView *focused; BOOL animating, loading; } Ctx;
 
@@ -106,6 +111,11 @@ static void Consider(id obj, UIView *owner, CGRect frame, CGRect vis, NSDictiona
       if (hit && ([hit isDescendantOfView:owner] || [owner isDescendantOfView:hit])) tap = ap;
     }
   }
+  if (gRejects && !shown && !isView) {
+    UIView *hit = CGRectIsEmpty(vis) ? nil : HitAt(CGPointMake(CGRectGetMidX(vis), CGRectGetMidY(vis)), c->windows);
+    [gRejects addObject:@{@"label": label, @"frame": R(frame), @"vis": R(vis), @"owner": NSStringFromClass(owner.class),
+      @"hit": hit ? NSStringFromClass(hit.class) : @"-", @"hitInOwner": @(hit && [hit isDescendantOfView:owner]), @"ownerInHit": @(hit && [owner isDescendantOfView:hit])}];
+  }
   // Drop slivers: under a third showing and too thin to tap reliably.
   CGFloat frac = frame.size.width * frame.size.height > 0 ? (vis.size.width * vis.size.height) / (frame.size.width * frame.size.height) : 0;
   if (shown && frac < 0.33 && (vis.size.height < 24 || vis.size.width < 24)) shown = NO;
@@ -122,7 +132,7 @@ static void Consider(id obj, UIView *owner, CGRect frame, CGRect vis, NSDictiona
   }
   if (shown) {
     NSMutableDictionary *e = [@{@"kind": kind, @"id": ident, @"label": label,
-                                @"frame": R(frame), @"tap": @[@(round(tap.x)), @(round(tap.y))]} mutableCopy];
+                                @"frame": R(frame), @"tap": @[N(tap.x), N(tap.y)]} mutableCopy];
     if (!CGRectEqualToRect(CGRectIntegral(vis), CGRectIntegral(frame))) e[@"clipped"] = @YES;
     NSString *val = [obj accessibilityValue];
     // Switches (UISwitch, SwiftUI Toggle) report "1"/"0"; spell it out so a model can tell the state.
@@ -154,7 +164,16 @@ static void Consider(id obj, UIView *owner, CGRect frame, CGRect vis, NSDictiona
 }
 
 static NSArray *AXChildren(id o) {
-  NSArray *a = [o respondsToSelector:@selector(accessibilityElements)] ? [o accessibilityElements] : nil;
+  // Prefer what UI-testing clients (XCUITest, axe) traverse; SwiftUI exposes more there than in accessibilityElements.
+  SEL userTesting = NSSelectorFromString(@"_accessibilityUserTestingChildren");
+  if ([o respondsToSelector:userTesting]) {
+    NSArray *(*msg)(id, SEL) = (void *)objc_msgSend;
+    NSArray *u = msg(o, userTesting);
+    if ([u isKindOfClass:NSArray.class] && u.count) return u;
+  }
+  NSArray *a = [o respondsToSelector:@selector(automationElements)] ? [o automationElements] : nil;
+  if (a.count) return a;
+  a = [o respondsToSelector:@selector(accessibilityElements)] ? [o accessibilityElements] : nil;
   if (a.count) return a;
   NSInteger n = [o respondsToSelector:@selector(accessibilityElementCount)] ? [o accessibilityElementCount] : 0;
   if (n <= 0 || n == NSNotFound) return @[];
@@ -218,7 +237,7 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
     if (o.x + b.width < cs.width + in.right - 1) [more addObject:@"right"];
     NSString *sid = [NSString stringWithFormat:@"S%lu", (unsigned long)c->scrolls.count];
     [c->scrolls addObject:[@{@"ref": sid, @"id": NearestId(v), @"frame": R(vis), @"more": more,
-                             @"offset": @[@(round(o.x)), @(round(o.y))], @"content": @[@(round(cs.width)), @(round(cs.height))], @"paging": @(s.isPagingEnabled)} mutableCopy]];
+                             @"offset": @[N(o.x), N(o.y)], @"content": @[N(cs.width), N(cs.height)], @"paging": @(s.isPagingEnabled)} mutableCopy]];
     myScroll = @{@"ref": sid, @"vis": [NSValue valueWithCGRect:vis]};
   }
   if (v.clipsToBounds || [v isKindOfClass:UIScrollView.class]) clip = vis;
@@ -363,7 +382,12 @@ static void *Serve(void *arg) {
       NSString *r = [NSString stringWithFormat:@"HTTP/1.1 %d Rejected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status];
       send(cl, r.UTF8String, strlen(r.UTF8String), 0); close(cl); continue;
     }
-    if ([u.path isEqualToString:@"/screen"]) dispatch_sync(dispatch_get_main_queue(), ^{ @autoreleasepool { body = Screen(); } });
+    if ([u.path isEqualToString:@"/screen"]) dispatch_sync(dispatch_get_main_queue(), ^{ @autoreleasepool {
+      gRejects = q[@"debug"] ? [NSMutableArray array] : nil;
+      body = Screen();
+      if (gRejects) body = [NSJSONSerialization dataWithJSONObject:gRejects options:0 error:nil];
+      gRejects = nil;
+    } });
     else if ([u.path isEqualToString:@"/debug"]) dispatch_sync(dispatch_get_main_queue(), ^{
       NSMutableArray *lines = [NSMutableArray array];
       for (UIWindow *w in Windows()) Dump(w, 0, lines);
@@ -379,6 +403,22 @@ static void *Serve(void *arg) {
 }
 
 __attribute__((constructor)) static void Start(void) {
+  // SwiftUI builds its full accessibility tree only for an attached AX client; turn on automation mode
+  // like KIF does (private libAccessibility call), so buttons inside rows and cells are exposed.
+  void *ax = dlopen("/usr/lib/libAccessibility.dylib", RTLD_NOW);
+  void (*setAutomation)(int) = ax ? (void (*)(int))dlsym(ax, "_AXSSetAutomationEnabled") : NULL;
+  if (setAutomation) setAutomation(1); else NSLog(@"[simflick] _AXSSetAutomationEnabled unavailable");
+  // What an AX client (VoiceOver, axe) triggers: load the UIKit and SwiftUI accessibility bundles once UIKit is up.
+  dispatch_async(dispatch_get_main_queue(), ^{
+    for (NSString *b in @[@"UIKit", @"SwiftUI"]) {
+      // Simulator processes see iOS system files under IPHONE_SIMULATOR_ROOT, not under the Mac's /System.
+      NSString *root = NSProcessInfo.processInfo.environment[@"IPHONE_SIMULATOR_ROOT"] ?: @"";
+      NSBundle *bundle = [NSBundle bundleWithPath:[NSString stringWithFormat:@"%@/System/Library/AccessibilityBundles/%@.axbundle", root, b]];
+      NSError *err = nil;
+      if (!bundle || ![bundle loadAndReturnError:&err]) NSLog(@"[simflick] could not load %@.axbundle: %@", b, err ?: @"bundle not found");
+      else NSLog(@"[simflick] loaded %@.axbundle", b);
+    }
+  });
   NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
   [nc addObserverForName:UIKeyboardWillChangeFrameNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
     gKeyboard = [n.userInfo[UIKeyboardFrameEndUserInfoKey] CGRectValue]; }];
