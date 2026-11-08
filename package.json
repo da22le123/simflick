@@ -1,0 +1,20 @@
+{
+  "name": "simflick",
+  "version": "0.1.0",
+  "description": "Fast UI driving for iOS simulator apps, built for AI agents",
+  "type": "module",
+  "bin": { "simflick": "dist/cli.js" },
+  "files": ["dist", "build/simflick.dylib"],
+  "os": ["darwin"],
+  "engines": { "node": ">=18" },
+  "scripts": {
+    "build": "./build.sh && tsc",
+    "prepare": "npm run build"
+  },
+  "devDependencies": {
+    "@types/node": "^20.14.0",
+    "typescript": "^5.6.3"
+  },
+  "license": "UNLICENSED",
+  "private": true
+}

@@ -13,7 +13,21 @@ A small Objective-C library is injected into the app at launch. It serves, over 
 
 AXe (the out-of-process alternative) takes 0.4–2 s per screen read and ~1.3 s per tap.
 
-## Usage
+## CLI
+
+```sh
+npm install && npm run build        # builds the dylib + the CLI
+node dist/cli.js launch <bundle-id> [--udid U] [--port P]
+node dist/cli.js screen               # numbered table; numbers work with tap
+node dist/cli.js tap 7 --screen       # or a testID, or x,y
+node dist/cli.js scroll S0 down
+node dist/cli.js type "hello"         # refuses unless a text field is focused
+```
+
+Every action re-checks its target on a fresh read, then waits for the screen to change and settle
+(nothing animating, two identical reads). Element numbers refer to the last `screen` output.
+
+## Raw HTTP
 
 ```sh
 ./build.sh
@@ -27,6 +41,6 @@ curl "localhost:8765/tap?x=220&y=670"
 
 ## Status
 
-Prototype. Typing still goes through `axe type`. Next: a CLI, settle detection, a pre-tap check,
-then a Jev-style decision loop. Relies on private UIKit APIs (simulator only); missing selectors
+Prototype. Typing still goes through `axe type`. Next: gesture-only surfaces (e.g. swipeable cards)
+as elements, then a Jev-style decision loop. Relies on private UIKit APIs (simulator only); missing selectors
 are reported in action responses instead of crashing.

@@ -1,3 +1,5 @@
 build/
 *.dylib
 .DS_Store
+dist/
+node_modules/

@@ -47,7 +47,7 @@ static NSString *NearestId(UIView *v) {
 
 NSData *SRHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q);
 
-typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn; UIView *focused; } Ctx;
+typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn; UIView *focused; BOOL animating; } Ctx;
 // The keyboard is drawn by another process; the app only learns its frame from these notifications.
 static CGRect gKeyboard;
 
@@ -57,6 +57,8 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
   frame = [v.window convertRect:frame toWindow:nil];
   CGRect vis = CGRectIntersection(frame, clip);
   if (v.isFirstResponder) c->focused = v;
+  // Core Animation moves layers while views already report final frames; flag it so callers keep waiting.
+  if (v.layer.animationKeys.count && !CGRectIsEmpty(vis)) c->animating = YES;
 
   NSDictionary *myScroll = scroll;
   UIView *centerHit = CGRectIsEmpty(vis) ? nil : HitAt(CGPointMake(CGRectGetMidX(vis), CGRectGetMidY(vis)), c->windows);
@@ -135,8 +137,17 @@ static NSData *Screen(void) {
       kb[@"returnKey"] = @[@"default", @"go", @"google", @"join", @"next", @"route", @"search", @"send", @"yahoo", @"done", @"emergencyCall", @"continue"][MIN((NSInteger)[(id<UITextInputTraits>)c.focused returnKeyType], 11)];
   }
   NSDictionary *out = @{@"screen": @[@(sb.size.width), @(sb.size.height)], @"windows": wnames,
-                        @"keyboard": kb, @"elements": c.els, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
+                        @"keyboard": kb, @"animating": @(c.animating), @"elements": c.els, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
   return [NSJSONSerialization dataWithJSONObject:out options:0 error:nil];
+}
+
+// Top of the view tree with visibility facts, for diagnosing empty reads.
+static void Dump(UIView *v, int depth, NSMutableArray *out) {
+  if (depth > 9 || out.count > 400) return;
+  CGRect f = [v.window convertRect:[v convertRect:v.bounds toView:nil] toWindow:nil];
+  [out addObject:[NSString stringWithFormat:@"%*s%@ hidden=%d alpha=%.2f pres=%.2f clip=%d ax=%d id=%@ %@", depth * 2, "", NSStringFromClass(v.class),
+    v.hidden, v.alpha, v.layer.presentationLayer ? v.layer.presentationLayer.opacity : -1, v.clipsToBounds, v.isAccessibilityElement, v.accessibilityIdentifier ?: @"", NSStringFromCGRect(f)]];
+  if (!v.hidden) for (UIView *sub in v.subviews) Dump(sub, depth + 1, out);
 }
 
 static void *Serve(void *arg) {
@@ -155,6 +166,11 @@ static void *Serve(void *arg) {
     NSMutableDictionary *q = [NSMutableDictionary dictionary];
     for (NSURLQueryItem *it in u.queryItems) if (it.value) q[it.name] = it.value;
     if ([u.path isEqualToString:@"/screen"]) dispatch_sync(dispatch_get_main_queue(), ^{ @autoreleasepool { body = Screen(); } });
+    else if ([u.path isEqualToString:@"/debug"]) dispatch_sync(dispatch_get_main_queue(), ^{
+      NSMutableArray *lines = [NSMutableArray array];
+      for (UIWindow *w in Windows()) Dump(w, 0, lines);
+      body = [[lines componentsJoinedByString:@"\n"] dataUsingEncoding:NSUTF8StringEncoding];
+    });
     else if (u.path) body = SRHandleAction(u.path, q);
     NSString *head = body ? [NSString stringWithFormat:@"HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n", (unsigned long)body.length]
                           : @"HTTP/1.1 404 Not Found\r\nContent-Length: 0\r\nConnection: close\r\n\r\n";
