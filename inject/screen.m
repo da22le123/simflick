@@ -52,7 +52,7 @@ static NSString *NearestId(UIView *v) {
 NSData *SRHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q);
 static NSMutableArray *gRejects;  // filled only for /screen?debug=1
 
-typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn, *ahead; NSMutableArray *hidden, *axTexts, *remote; UIView *focused; BOOL animating, loading; } Ctx;
+typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn, *ahead; NSMutableArray *hidden, *axTexts, *remote, *cells, *shownTexts; UIView *focused; BOOL animating, loading; } Ctx;
 
 // Skips text owned by other tappable elements (e.g. a neighbouring tab), which would mislabel this one.
 static void CollectText(UIView *v, UIView *self_, NSMutableArray *out, int depth, BOOL offscreenOK) {
@@ -126,7 +126,10 @@ static void Consider(id obj, UIView *owner, CGRect frame, CGRect vis, NSDictiona
       [[obj accessibilityLabel] rangeOfString:@"^-?[0-9.,]+ to -?[0-9.,]+$" options:NSRegularExpressionSearch].location != NSNotFound) return;
   if (!isView && shown && ([[obj accessibilityLabel] isEqualToString:@"In progress"] || [[obj accessibilityLabel] isEqualToString:@"Loading"])) c->loading = YES;
   if (!isView && ([kind isEqualToString:@"text"] || [kind isEqualToString:@"header"])) {
-    if (shown && label.length) [c->texts addObject:label];
+    if (shown && label.length) {
+      [c->texts addObject:label];
+      if ([kind isEqualToString:@"text"]) [c->shownTexts addObject:@{@"label": label, @"frame": [NSValue valueWithCGRect:vis]}];  // headers don't make rows
+    }
     if (label.length && myScroll) [c->axTexts addObject:@{@"label": label, @"frame": R(frame), @"in": myScroll[@"ref"]}];
     return;
   }
@@ -224,6 +227,8 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
     for (UIView *p = v.superview; p && !host.length; p = p.superview) if (![NSStringFromClass(p.class) hasPrefix:@"_"]) host = NSStringFromClass(p.class);
     if (hit && ([hit isDescendantOfView:v] || hit == v)) [c->remote addObject:@{@"frame": R(vis), @"host": host}];
   }
+  if (([v isKindOfClass:UICollectionViewCell.class] || [v isKindOfClass:UITableViewCell.class]) && vis.size.height >= 30 && scroll)
+    [c->cells addObject:@{@"frame": [NSValue valueWithCGRect:vis], @"in": scroll[@"ref"]}];
   NSDictionary *myScroll = scroll;
   UIView *centerHit = CGRectIsEmpty(vis) ? nil : HitAt(CGPointMake(CGRectGetMidX(vis), CGRectGetMidY(vis)), c->windows);
   // Only report scroll areas the user can actually reach (not ones under a sheet, not text-input internals).
@@ -258,7 +263,7 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
 
 static NSData *Screen(void) {
   CFTimeInterval t0 = CACurrentMediaTime();
-  Ctx c = {[NSMutableArray array], [NSMutableArray array], [NSMutableArray array], Windows(), [NSMutableDictionary dictionary], [NSMutableDictionary dictionary], [NSMutableArray array], [NSMutableArray array], [NSMutableArray array]};
+  Ctx c = {[NSMutableArray array], [NSMutableArray array], [NSMutableArray array], Windows(), [NSMutableDictionary dictionary], [NSMutableDictionary dictionary], [NSMutableArray array], [NSMutableArray array], [NSMutableArray array], [NSMutableArray array], [NSMutableArray array]};
   NSMutableArray *wnames = [NSMutableArray array];
   for (UIWindow *w in c.windows) {
     [wnames addObject:NSStringFromClass(w.class)];
@@ -316,6 +321,41 @@ static NSData *Screen(void) {
     if (!inside) [kept addObject:e];
   }
   [c.els setArray:kept];
+  // A list cell that opens something when tapped (e.g. a post) has no element of its own in SwiftUI;
+  // add one, tapped on its text (away from the buttons inside it), as a person would.
+  for (NSDictionary *cell in c.cells) {
+    CGRect cf = [cell[@"frame"] CGRectValue];
+    NSMutableArray *words = [NSMutableArray array], *inside = [NSMutableArray array];
+    for (NSDictionary *t in c.shownTexts) {
+      CGRect tf = [t[@"frame"] CGRectValue];
+      if (CGRectContainsPoint(cf, CGPointMake(CGRectGetMidX(tf), CGRectGetMidY(tf)))) [words addObject:t[@"label"]];
+    }
+    for (NSDictionary *e in c.els) {
+      CGRect ef = CGRectMake([e[@"frame"][0] doubleValue], [e[@"frame"][1] doubleValue], [e[@"frame"][2] doubleValue], [e[@"frame"][3] doubleValue]);
+      if (!CGRectContainsPoint(cf, CGPointMake(CGRectGetMidX(ef), CGRectGetMidY(ef)))) continue;
+      [inside addObject:[NSValue valueWithCGRect:ef]];
+      // Skip counters ("491", "5 · 238"): they don't say what the row is.
+      if (words.count < 3) for (NSString *w in @[e[@"label"] ?: @"", e[@"context"] ?: @""])
+        if (w.length > 2 && [w rangeOfString:@"[A-Za-z\\p{L}]{2}" options:NSRegularExpressionSearch].location != NSNotFound && ![words containsObject:w]) [words addObject:w];
+    }
+    if (!words.count) continue;
+    // Tap a free spot (on no element) nearest the cell's middle: where a person taps to open the row.
+    CGPoint best = CGPointZero; double bestD = 1e9;
+    for (int gx = 1; gx < 8; gx++) for (int gy = 1; gy < 6; gy++) {
+      CGPoint p = CGPointMake(CGRectGetMinX(cf) + cf.size.width * gx / 8, CGRectGetMinY(cf) + cf.size.height * gy / 6);
+      BOOL onEl = NO;
+      for (NSValue *ev in inside) if (CGRectContainsPoint(CGRectInset([ev CGRectValue], -4, -4), p)) { onEl = YES; break; }
+      if (onEl) continue;
+      UIView *hit = HitAt(p, c.windows);
+      if (!hit) continue;
+      double d = hypot(p.x - CGRectGetMidX(cf), p.y - CGRectGetMidY(cf));
+      if (d < bestD) { bestD = d; best = p; }
+    }
+    if (bestD >= 1e9) continue;
+    NSString *label = [words componentsJoinedByString:@" · "];
+    if (label.length > 160) label = [label substringToIndex:160];
+    [c.els addObject:@{@"kind": @"row", @"id": @"", @"label": label, @"frame": R(cf), @"tap": @[N(best.x), N(best.y)], @"in": cell[@"in"]}];
+  }
   for (NSMutableDictionary *s in c.scrolls) {
     NSMutableArray *ahead = [NSMutableArray array];
     for (NSDictionary *h in c.hidden) if ([h[@"in"] isEqualToString:s[@"ref"]] && ahead.count < 20)

@@ -77,6 +77,14 @@ export async function launch(bundleId: string, udid: string, port: number): Prom
   throw new SimflickError("app launched but the library never answered (30 s)");
 }
 
+// Skeleton placeholders are static, so "nothing changed" isn't "loaded": several unlabelled list items and
+// no text on screen at all means content is still arriving.
+function looksLikeSkeleton(sc: Screen): boolean {
+  const inLists = sc.elements.filter((e) => e.in);
+  const blank = inLists.filter((e) => !e.label && !e.context && !e.value).length;
+  return sc.text.length === 0 && inLists.length >= 4 && blank / inLists.length >= 0.7;
+}
+
 // RN reacts a few frames after a touch: first wait for the screen to differ from `before` (or give up),
 // then until nothing changed for `quietMs` (Reanimated moves views without CA animations, and sheets
 // often pause ~100 ms before sliding). Capped so looping animations can't hang us.
@@ -87,7 +95,7 @@ export async function settled(s: Session, before?: string, capMs = 5500, quietMs
   let prev = keyOf(cur), since = Date.now();
   while (Date.now() - start < capMs) {
     // While a spinner shows, keep waiting (up to 5 s) so the model doesn't judge a half-loaded screen.
-    const loadingWait = cur.loading && Date.now() - start < 5000;
+    const loadingWait = (cur.loading || looksLikeSkeleton(cur)) && Date.now() - start < 5000;
     if (!cur.animating && !loadingWait && Date.now() - since >= quietMs) break;
     await sleep(35);
     cur = await get<Screen>(s, "/screen");
