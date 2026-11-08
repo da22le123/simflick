@@ -397,6 +397,7 @@ static NSData *Screen(void) {
       if (o == e) continue;
       CGRect of = CGRectMake([o[@"frame"][0] doubleValue], [o[@"frame"][1] doubleValue], [o[@"frame"][2] doubleValue], [o[@"frame"][3] doubleValue]);
       if (!CGRectContainsRect(CGRectInset(cf, -1, -1), of) || CGRectEqualToRect(of, cf)) continue;
+      if (![(o[@"in"] ?: @"") isEqualToString:(e[@"in"] ?: @"")]) continue;  // not from another area (tab bar)
       [inside addObject:[NSValue valueWithCGRect:of]];
       for (NSString *w in @[o[@"context"] ?: @"", o[@"label"] ?: @""])
         if (words.count < 3 && w.length > 2 && [w rangeOfString:@"[A-Za-z\\p{L}]{2}" options:NSRegularExpressionSearch].location != NSNotFound && ![words containsObject:w]) [words addObject:w];
