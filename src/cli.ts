@@ -40,6 +40,7 @@ function print(sc: Screen) {
     if (e.value !== undefined) bits.push(`value=${JSON.stringify(e.value)}`);
     if (e.clipped) bits.push("(partly visible)");
     if (e.selected) bits.push("(selected)");
+    if (e.system) bits.push("[iOS system alert]");
     if (e.context) bits.push(`— ${e.context}`);
     console.log(bits.filter(Boolean).join(" "));
   });
@@ -47,6 +48,7 @@ function print(sc: Screen) {
     console.log(`${r.ref} scroll ${r.id ? "#" + r.id : ""} more: ${r.more.join("/") || "none"}, ${r.hiddenItems} items out of view`);
     for (const x of (r.ahead ?? []).slice(0, 6)) console.log(`   ${x.dir}: ${x.what}`);
   }
+  for (const r of sc.remote ?? []) console.log(`UNREADABLE: content from another process (${r.host}) covers ${r.frame.join(",")}; only a screenshot shows it`);
   if (sc.text.length) console.log(`text: ${sc.text.join(" | ")}`);
 }
 

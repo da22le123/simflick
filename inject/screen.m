@@ -47,7 +47,7 @@ static NSString *NearestId(UIView *v) {
 
 NSData *SRHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q);
 
-typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn, *ahead; NSMutableArray *hidden, *axTexts; UIView *focused; BOOL animating; } Ctx;
+typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn, *ahead; NSMutableArray *hidden, *axTexts, *remote; UIView *focused; BOOL animating; } Ctx;
 
 // Skips text owned by other tappable elements (e.g. a neighbouring tab), which would mislabel this one.
 static void CollectText(UIView *v, UIView *self_, NSMutableArray *out, int depth, BOOL offscreenOK) {
@@ -122,7 +122,9 @@ static void Consider(id obj, UIView *owner, CGRect frame, CGRect vis, NSDictiona
     if (!CGRectEqualToRect(CGRectIntegral(vis), CGRectIntegral(frame))) e[@"clipped"] = @YES;
     NSString *val = [obj accessibilityValue];
     // Switches (UISwitch, SwiftUI Toggle) report "1"/"0"; spell it out so a model can tell the state.
-    if ([obj isKindOfClass:UISwitch.class] || (([obj accessibilityTraits] & UIAccessibilityTraitButton) && ([val isEqualToString:@"1"] || [val isEqualToString:@"0"]))) {
+    BOOL toggle = NO;
+    if (@available(iOS 17.0, *)) toggle = ([obj accessibilityTraits] & UIAccessibilityTraitToggleButton) != 0;
+    if ([obj isKindOfClass:UISwitch.class] || (toggle && ([val isEqualToString:@"1"] || [val isEqualToString:@"0"]))) {
       e[@"kind"] = @"switch"; val = [val isEqualToString:@"1"] ? @"on" : @"off";
     }
     if (val.length) e[@"value"] = val;
@@ -190,6 +192,13 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
   // Core Animation moves layers while views already report final frames; flag it so callers keep waiting.
   if (v.layer.animationKeys.count && !CGRectIsEmpty(vis)) c->animating = YES;
 
+  // Content drawn by another process (Safari sheets, web sign-in, some system UI) is opaque to us and to axe.
+  if ([NSStringFromClass(v.class) isEqualToString:@"_UIRemoteView"] && !CGRectIsEmpty(vis)) {
+    UIView *hit = HitAt(CGPointMake(CGRectGetMidX(vis), CGRectGetMidY(vis)), c->windows);
+    NSString *host = @"";
+    for (UIView *p = v.superview; p && !host.length; p = p.superview) if (![NSStringFromClass(p.class) hasPrefix:@"_"]) host = NSStringFromClass(p.class);
+    if (hit && ([hit isDescendantOfView:v] || hit == v)) [c->remote addObject:@{@"frame": R(vis), @"host": host}];
+  }
   NSDictionary *myScroll = scroll;
   UIView *centerHit = CGRectIsEmpty(vis) ? nil : HitAt(CGPointMake(CGRectGetMidX(vis), CGRectGetMidY(vis)), c->windows);
   // Only report scroll areas the user can actually reach (not ones under a sheet, not text-input internals).
@@ -224,7 +233,7 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
 
 static NSData *Screen(void) {
   CFTimeInterval t0 = CACurrentMediaTime();
-  Ctx c = {[NSMutableArray array], [NSMutableArray array], [NSMutableArray array], Windows(), [NSMutableDictionary dictionary], [NSMutableDictionary dictionary], [NSMutableArray array], [NSMutableArray array]};
+  Ctx c = {[NSMutableArray array], [NSMutableArray array], [NSMutableArray array], Windows(), [NSMutableDictionary dictionary], [NSMutableDictionary dictionary], [NSMutableArray array], [NSMutableArray array], [NSMutableArray array]};
   NSMutableArray *wnames = [NSMutableArray array];
   for (UIWindow *w in c.windows) {
     [wnames addObject:NSStringFromClass(w.class)];
@@ -251,6 +260,26 @@ static NSData *Screen(void) {
     NSMutableArray *arr = i < c.els.count ? c.els : c.hidden;
     arr[i < c.els.count ? i : i - c.els.count] = m;
   }
+  // SwiftUI controls appear both as a view and as an accessibility object: merge same-place, same-size entries.
+  NSMutableArray *merged = [NSMutableArray array];
+  for (NSDictionary *e in c.els) {
+    NSArray *f = e[@"frame"]; NSInteger dup = NSNotFound;
+    for (NSUInteger j = 0; j < merged.count && dup == NSNotFound; j++) {
+      NSArray *g = merged[j][@"frame"];
+      if (fabs([f[0] doubleValue] + [f[2] doubleValue] / 2 - [g[0] doubleValue] - [g[2] doubleValue] / 2) < 6 &&
+          fabs([f[1] doubleValue] + [f[3] doubleValue] / 2 - [g[1] doubleValue] - [g[3] doubleValue] / 2) < 6 &&
+          fabs([f[2] doubleValue] - [g[2] doubleValue]) < 12 && fabs([f[3] doubleValue] - [g[3] doubleValue]) < 12) dup = j;
+    }
+    if (dup == NSNotFound) { [merged addObject:e]; continue; }
+    // Keep the richer one: inputs over text, labelled over unlabelled, with an id over without.
+    NSDictionary *o = merged[dup];
+    int (^score)(NSDictionary *) = ^int(NSDictionary *x) {
+      return ([x[@"kind"] isEqualToString:@"input"] ? 8 : 0) + ([x[@"kind"] isEqualToString:@"text"] ? -4 : 0) +
+             ([x[@"label"] length] ? 2 : 0) + ([x[@"id"] length] ? 1 : 0) + (x[@"value"] ? 1 : 0);
+    };
+    if (score(e) > score(o)) merged[dup] = e;
+  }
+  [c.els setArray:merged];
   for (NSMutableDictionary *s in c.scrolls) {
     NSMutableArray *ahead = [NSMutableArray array];
     for (NSDictionary *h in c.hidden) if ([h[@"in"] isEqualToString:s[@"ref"]] && ahead.count < 20)
@@ -267,7 +296,7 @@ static NSData *Screen(void) {
       kb[@"returnKey"] = @[@"default", @"go", @"google", @"join", @"next", @"route", @"search", @"send", @"yahoo", @"done", @"emergencyCall", @"continue"][MIN((NSInteger)[(id<UITextInputTraits>)c.focused returnKeyType], 11)];
   }
   NSDictionary *out = @{@"screen": @[@(sb.size.width), @(sb.size.height)], @"windows": wnames,
-                        @"keyboard": kb, @"animating": @(c.animating), @"elements": c.els, @"hidden": c.hidden, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
+                        @"keyboard": kb, @"active": @(UIApplication.sharedApplication.applicationState == UIApplicationStateActive), @"animating": @(c.animating), @"elements": c.els, @"hidden": c.hidden, @"remote": c.remote, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
   return [NSJSONSerialization dataWithJSONObject:out options:0 error:nil];
 }
 

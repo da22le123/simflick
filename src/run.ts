@@ -28,7 +28,7 @@ If a required value is missing, return {"text": null}. Otherwise return {"text":
 type Step = { step: number; action: string; kind: string; text?: string; page_changed?: boolean; decide_ms: number; act_ms: number; p: number };
 type Control = { kind: "scroll" | "wait"; label: string; ref?: string; dir?: string };
 
-const elLabel = (e: El | Hidden) => [e.label || e.id.replace(/[-_]+/g, " ") || e.kind, e.context].filter(Boolean).join(" — ") + ("selected" in e && e.selected ? " (selected)" : "");
+const elLabel = (e: El | Hidden) => ("system" in e && e.system ? "[iOS system alert] " : "") + [e.label || e.id.replace(/[-_]+/g, " ") || e.kind, e.context].filter(Boolean).join(" — ") + ("selected" in e && e.selected ? " (selected)" : "");
 
 function actionSpace(sc: Screen) {
   const elements: Record<string, unknown>[] = [];
@@ -98,11 +98,12 @@ async function choose(s: Session, sc: Screen, goal: string, history: Step[]) {
       instructions: { goal, operation: op, rules: [NEXT_ACTION, TARGET] },
     };
   }
+  const remote = (sc.remote ?? []).map((r) => `Part of the screen (${r.frame.join(",")}) shows ${r.host} content from another process that cannot be read or targeted; its controls are not listed.`).join("\n");
   const kb = sc.keyboard.open ? `Keyboard is open, editing ${sc.keyboard.focused ?? "a field"}.` : "Keyboard is closed.";
   const body = {
     model: process.env.TYPESAFE_MODEL ?? "jev-latest",
     state: {
-      page: { url: `app://${s.bundleId}`, title: sc.text[0] ?? "", text: `${kb}\n${sc.text.join("\n")}`.slice(0, 6000) },
+      page: { url: `app://${s.bundleId}`, title: sc.text[0] ?? "", text: `${remote ? remote + "\n" : ""}${kb}\n${sc.text.join("\n")}`.slice(0, 6000) },
       elements,
       // Jev sends 10; multi-part goals need the whole (compact) history to know which parts are done.
       recent_actions: history.slice(-40).map(({ action, kind, text, page_changed }) => ({ action, kind, text, page_changed })),
@@ -204,8 +205,14 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
     const step: Step = { step: n, action: label, kind: d.operation, text, page_changed: keyOf(sc) !== before, decide_ms: d.decide_ms, act_ms: Math.round(performance.now() - a0), p: d.p };
     history.push(step);
     trace.push({ step: n, operation: d.operation, action: label, ...snap(sc) });
-    const fb = d.operation === "CLICK" && lastTapFellBack ? ", axe fallback" : "";
+    const fb = d.operation === "CLICK" ? (d.target && "system" in d.target && d.target.system ? ", system alert via axe" : lastTapFellBack ? ", axe fallback" : "") : "";
     console.log(`${String(n).padStart(2)} ${d.operation.padEnd(9)} ${label}${text ? ` <- ${JSON.stringify(text)}` : ""}  (decide ${step.decide_ms} ms, act ${step.act_ms} ms, p=${d.p.toFixed(2)}${fb}${step.page_changed ? "" : ", NO CHANGE"})`);
+    const waits = history.slice(-4);
+    if (waits.length === 4 && waits.every((h) => h.kind === "WAIT" && !h.page_changed)) {
+      console.log("blocked: waited 4 times and nothing changed");
+      await flush("blocked");
+      return "blocked";
+    }
     const last3 = history.slice(-3);
     if (last3.length === 3 && last3.every((h) => !h.page_changed && h.kind !== "WAIT")) {
       console.log("blocked: 3 actions in a row changed nothing");

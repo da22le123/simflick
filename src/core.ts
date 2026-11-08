@@ -6,10 +6,10 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type El = { kind: string; id: string; label: string; context?: string; selected?: boolean; frame: number[]; tap: number[]; in?: string; value?: string; clipped?: boolean };
+export type El = { kind: string; id: string; label: string; context?: string; selected?: boolean; system?: boolean; frame: number[]; tap: number[]; in?: string; value?: string; clipped?: boolean };
 export type Scroll = { ref: string; id: string; frame: number[]; more: string[]; offset: number[]; content: number[]; hiddenItems: number; paging?: boolean; ahead?: { dir: string; what: string }[] };
 export type Hidden = { kind: string; id: string; label: string; context?: string; frame: number[]; in: string; dir: string };
-export type Screen = { screen: number[]; animating: boolean; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; hidden?: Hidden[]; text: string[]; scrolls: Scroll[]; ms: number };
+export type Screen = { screen: number[]; active?: boolean | number; animating: boolean; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; hidden?: Hidden[]; remote?: { frame: number[]; host: string }[]; text: string[]; scrolls: Scroll[]; ms: number };
 export type Session = { udid: string; port: number; bundleId: string; token: string };
 
 export class SimflickError extends Error {
@@ -92,7 +92,33 @@ export async function settled(s: Session, before?: string, capMs = 2500, quietMs
     const key = keyOf(cur);
     if (key !== prev || cur.animating) { prev = key; since = Date.now(); }
   }
-  return cur;
+  // The library sends active as 0/1; only an explicit inactive triggers the (slower) system-alert read.
+  return cur.active !== undefined && !cur.active ? withSystemAlert(s, cur) : cur;
+}
+
+type AxNode = { type?: string; AXLabel?: string; frame?: { x: number; y: number; width: number; height: number }; children?: AxNode[] };
+
+// System alerts (permissions, "Open in…") are drawn by iOS, outside the app, so the injected library can't
+// see them; the app just goes inactive. Only then pay for an axe read and expose the alert's buttons.
+function withSystemAlert(s: Session, sc: Screen): Screen {
+  let tree: AxNode[];
+  try { tree = JSON.parse(execFileSync("axe", ["describe-ui", "--udid", s.udid], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"] })); }
+  catch { return sc; }
+  const alerts: AxNode[] = [];
+  const find = (n: AxNode) => { if (n.type === "Sheet" || n.type === "Alert") alerts.push(n); else (n.children ?? []).forEach(find); };
+  tree.forEach(find);
+  if (!alerts.length) return sc;
+  const buttons: El[] = [], text: string[] = [];
+  const walk = (n: AxNode) => {
+    const f = n.frame;
+    if (n.type === "Button" && f) buttons.push({ kind: "button", id: "", label: n.AXLabel ?? "", system: true,
+      frame: [f.x, f.y, f.width, f.height].map(Math.round), tap: [Math.round(f.x + f.width / 2), Math.round(f.y + f.height / 2)] });
+    else if (n.AXLabel && !/scroll bar/i.test(n.AXLabel) && !text.includes(n.AXLabel)) text.push(n.AXLabel);
+    (n.children ?? []).forEach(walk);
+  };
+  alerts.forEach(walk);
+  // While an alert is up, the app underneath can't be tapped: show only the alert.
+  return { ...sc, elements: buttons, hidden: [], scrolls: [], text: [`System alert: ${text.join(" | ")}`] };
 }
 
 export const describe = (e: El) => `${e.kind} ${JSON.stringify(e.label)}${e.id ? " #" + e.id : ""}`;
@@ -107,7 +133,7 @@ export async function revealAndTap(s: Session, want: Ident): Promise<Screen> {
     const sc = await settled(s);
     const vis = sc.elements.find((e) => sameEl(e, want));
     const hid = vis ? undefined : sc.hidden?.find((e) => sameEl(e, want));
-    if (vis && !vis.clipped) return tapPoint(s, vis.tap[0], vis.tap[1], keyOf(sc));
+    if (vis && (!vis.clipped || vis.system)) return tapPoint(s, vis.tap[0], vis.tap[1], keyOf(sc), !!vis.system);
     const area = sc.scrolls.find((a) => a.ref === (vis?.in ?? hid?.in));
     if (!area) {
       if (vis) return tapPoint(s, vis.tap[0], vis.tap[1], keyOf(sc));
@@ -137,20 +163,33 @@ export async function tapElement(s: Session, want: El): Promise<Screen> {
   const fresh = await settled(s);
   const match = fresh.elements.find((e) => sameEl(e, want));
   if (!match) throw new SimflickError(`target ${describe(want)} is not on screen any more`, 2);
-  return tapPoint(s, match.tap[0], match.tap[1], keyOf(fresh));
+  return tapPoint(s, match.tap[0], match.tap[1], keyOf(fresh), !!match.system);
 }
 
 export let lastTapFellBack = false;
 
-export async function tapPoint(s: Session, x: number, y: number, before?: string): Promise<Screen> {
+export async function tapPoint(s: Session, x: number, y: number, before?: string, system = false): Promise<Screen> {
   before ??= keyOf(await get<Screen>(s, "/screen"));
+  if (system) {
+    lastTapFellBack = false;
+    execFileSync("axe", ["tap", "-x", String(x), "-y", String(y), "--udid", s.udid], { stdio: "ignore" });
+    const sc = await settled(s, before);
+    save(s, sc);
+    return sc;
+  }
   const r = await get<{ ok: boolean }>(s, `/tap?x=${x}&y=${y}`);
   if (!r.ok) throw new SimflickError(`tap at ${x},${y} hit nothing`);
   let sc = await settled(s, before);
   lastTapFellBack = false;
   // Some SwiftUI controls (e.g. buttons inside a ScrollView) ignore the synthetic in-app touch. If nothing
   // changed, repeat the tap as a real system touch via axe (slower, ~1.3 s).
-  if (keyOf(sc) === before) {
+  // Slow actions (network, then an alert) look unchanged at first: give them ~1.2 s before assuming the
+  // synthetic touch was ignored, so a working tap is never repeated.
+  for (const t0 = Date.now(); keyOf(sc) === before && sc.active !== 0 && sc.active !== false && Date.now() - t0 < 1200; ) {
+    await sleep(100);
+    sc = await get<Screen>(s, "/screen");
+  }
+  if (keyOf(sc) === before && sc.active !== 0 && sc.active !== false) {
     try {
       execFileSync("axe", ["tap", "-x", String(Math.round(x)), "-y", String(Math.round(y)), "--udid", s.udid], { stdio: "ignore" });
       sc = await settled(s, before);
