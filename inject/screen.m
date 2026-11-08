@@ -356,6 +356,16 @@ static NSData *Screen(void) {
     if (label.length > 160) label = [label substringToIndex:160];
     [c.els addObject:@{@"kind": @"row", @"id": @"", @"label": label, @"frame": R(cf), @"tap": @[N(best.x), N(best.y)], @"in": cell[@"in"]}];
   }
+  // SwiftUI views with only a tap gesture have no element; their visible text is the best handle.
+  NSMutableArray *textItems = [NSMutableArray array];
+  for (NSDictionary *t in c.shownTexts) {
+    CGRect tf = [t[@"frame"] CGRectValue]; CGPoint mid = CGPointMake(CGRectGetMidX(tf), CGRectGetMidY(tf)); BOOL covered = NO;
+    for (NSDictionary *e in c.els) {
+      CGRect ef = CGRectMake([e[@"frame"][0] doubleValue], [e[@"frame"][1] doubleValue], [e[@"frame"][2] doubleValue], [e[@"frame"][3] doubleValue]);
+      if (![e[@"kind"] isEqualToString:@"row"] && CGRectContainsPoint(ef, mid)) { covered = YES; break; }
+    }
+    if (!covered && textItems.count < 40) [textItems addObject:@{@"label": t[@"label"], @"tap": @[N(mid.x), N(mid.y)]}];
+  }
   for (NSMutableDictionary *s in c.scrolls) {
     NSMutableArray *ahead = [NSMutableArray array];
     for (NSDictionary *h in c.hidden) if ([h[@"in"] isEqualToString:s[@"ref"]] && ahead.count < 20)
@@ -372,7 +382,7 @@ static NSData *Screen(void) {
       kb[@"returnKey"] = @[@"default", @"go", @"google", @"join", @"next", @"route", @"search", @"send", @"yahoo", @"done", @"emergencyCall", @"continue"][MIN((NSInteger)[(id<UITextInputTraits>)c.focused returnKeyType], 11)];
   }
   NSDictionary *out = @{@"screen": @[@(sb.size.width), @(sb.size.height)], @"windows": wnames,
-                        @"keyboard": kb, @"active": @(UIApplication.sharedApplication.applicationState == UIApplicationStateActive), @"animating": @(c.animating), @"loading": @(c.loading), @"elements": c.els, @"hidden": c.hidden, @"remote": c.remote, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
+                        @"keyboard": kb, @"active": @(UIApplication.sharedApplication.applicationState == UIApplicationStateActive), @"animating": @(c.animating), @"loading": @(c.loading), @"elements": c.els, @"textItems": textItems, @"hidden": c.hidden, @"remote": c.remote, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
   return [NSJSONSerialization dataWithJSONObject:out options:0 error:nil];
 }
 

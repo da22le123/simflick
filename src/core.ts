@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 export type El = { kind: string; id: string; label: string; context?: string; selected?: boolean; system?: boolean; frame: number[]; tap: number[]; in?: string; value?: string; clipped?: boolean };
 export type Scroll = { ref: string; id: string; frame: number[]; more: string[]; offset: number[]; content: number[]; hiddenItems: number; paging?: boolean; ahead?: { dir: string; what: string }[] };
 export type Hidden = { kind: string; id: string; label: string; context?: string; frame: number[]; in: string; dir: string };
-export type Screen = { screen: number[]; active?: boolean | number; animating: boolean; loading?: boolean | number; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; hidden?: Hidden[]; remote?: { frame: number[]; host: string }[]; text: string[]; scrolls: Scroll[]; ms: number };
+export type Screen = { screen: number[]; active?: boolean | number; animating: boolean; loading?: boolean | number; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; textItems?: { label: string; tap: number[] }[]; hidden?: Hidden[]; remote?: { frame: number[]; host: string }[]; text: string[]; scrolls: Scroll[]; ms: number };
 export type Session = { udid: string; port: number; bundleId: string; token: string };
 
 export class SimflickError extends Error {
