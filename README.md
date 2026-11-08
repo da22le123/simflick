@@ -13,23 +13,33 @@ A small Objective-C library is injected into the app at launch. It serves, over 
 
 AXe (the out-of-process alternative) takes 0.4–2 s per screen read and ~1.3 s per tap.
 
+## Install
+
+```sh
+npm install -g github:da22le123/simflick   # private repo: needs GitHub access; builds on install
+# or, from a clone (for development):
+npm install && npm run build && npm link    # puts `simflick` on PATH, pointing at this checkout
+```
+
+Needs Xcode (simulators + clang) and Node ≥ 18. Typing uses `axe` for now (`brew install cameroncooke/axe/axe`).
+Put `TYPESAFE_API_KEY=...` (and optionally `ANTHROPIC_API_KEY` or `TEXT_MODEL_API_KEY`) in `.env` at the repo root, or export them in your shell.
+
 ## CLI
 
 ```sh
-npm install && npm run build        # builds the dylib + the CLI
-node dist/cli.js launch <bundle-id> [--udid U] [--port P]
-node dist/cli.js screen               # numbered table; numbers work with tap
-node dist/cli.js tap 7 --screen       # or a testID, or x,y
-node dist/cli.js scroll S0 down
-node dist/cli.js type "hello"         # refuses unless a text field is focused
-node dist/cli.js run "<goal>" --shot  # decision loop (needs TYPESAFE_API_KEY in .env); trace + end screenshot
+simflick launch <bundle-id> [--udid U] [--port P]
+simflick screen               # numbered table; numbers work with tap
+simflick tap 7 --screen       # or a testID, or x,y
+simflick scroll S0 down
+simflick type "hello"         # refuses unless a text field is focused
+simflick run "<goal>" --shot  # decision loop (needs TYPESAFE_API_KEY in .env); trace + end screenshot
 ```
 
 `run` writes `~/.simflick/runs/<time>.json`: per step the action and what was on screen (`--full-trace` keeps
 the whole screen per step; the final entry always does). `--shot` adds an end-state PNG.
 
 Every action re-checks its target on a fresh read, then waits for the screen to change and settle
-(nothing animating, two identical reads). Element numbers refer to the last `screen` output.
+(nothing animating and no change for 150 ms). Element numbers refer to the last `screen` output.
 
 ## Raw HTTP
 
