@@ -190,8 +190,14 @@ Every action waits for the screen to settle; --screen prints it afterwards.`);
     if (!now.keyboard.focused) die("no text field is focused; tap one first", 2);
     const before = keyOf(now);
     execFileSync("axe", ["type", text, "--udid", s.udid], { stdio: "ignore" });
-    console.log(`typed ${JSON.stringify(text)}`);
-    await after(s, flags, before);
+    const sc = await settled(s, before);
+    save(s, sc);
+    // Controlled RN inputs can drop keystrokes while JS is busy; report what actually landed.
+    const field = sc.elements.find((e) => e.kind === "input" && e.id === sc.keyboard.focused);
+    const got = field?.value ?? "";
+    if (flags.screen) print(sc);
+    if (!got.endsWith(text)) die(`typed ${JSON.stringify(text)} but the field now holds ${JSON.stringify(got)}`, 3);
+    console.log(`typed ${JSON.stringify(text)} -> field holds ${JSON.stringify(got)}`);
   } else if (cmd === "wait") {
     await after(s, flags);
     console.log("settled");
