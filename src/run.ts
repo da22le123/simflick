@@ -110,7 +110,7 @@ async function choose(s: Session, sc: Screen, goal: string, history: Step[]) {
     questions,
   };
   if (process.env.SIMFLICK_DEBUG) console.error(JSON.stringify({ elements, operations }, null, 1));
-  const key = process.env.TYPESAFE_API_KEY ?? (() => { throw new SimflickError("TYPESAFE_API_KEY is not set (put it in simflick/.env)"); })();
+  const key = process.env.TYPESAFE_API_KEY ?? (() => { throw new SimflickError("TYPESAFE_API_KEY is not set in the environment"); })();
   const t0 = performance.now();
   const res = await postJson("https://api.typesafe.ai/v1/systemone", key, body);
   const decide_ms = Math.round(performance.now() - t0);

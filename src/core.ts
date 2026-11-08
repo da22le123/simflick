@@ -1,6 +1,7 @@
 // Shared session, screen reading and actions used by both the CLI and the agent loop.
 import { execFileSync } from "node:child_process";
-import { existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
+import { randomBytes } from "node:crypto";
+import { chmodSync, existsSync, mkdirSync, readFileSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
@@ -9,7 +10,7 @@ export type El = { kind: string; id: string; label: string; context?: string; se
 export type Scroll = { ref: string; id: string; frame: number[]; more: string[]; offset: number[]; content: number[]; hiddenItems: number; paging?: boolean; ahead?: { dir: string; what: string }[] };
 export type Hidden = { kind: string; id: string; label: string; context?: string; frame: number[]; in: string; dir: string };
 export type Screen = { screen: number[]; animating: boolean; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; hidden?: Hidden[]; text: string[]; scrolls: Scroll[]; ms: number };
-export type Session = { udid: string; port: number; bundleId: string };
+export type Session = { udid: string; port: number; bundleId: string; token: string };
 
 export class SimflickError extends Error {
   constructor(message: string, public code = 1) { super(message); }
@@ -22,16 +23,6 @@ const STATE_DIR = join(homedir(), ".simflick");
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export const keyOf = (sc: Screen) => JSON.stringify([sc.elements, sc.scrolls, sc.keyboard, sc.text]);
 const sessionFile = (udid: string) => join(STATE_DIR, `${udid}.json`);
-
-// Loads KEY=value lines from the package's .env without overriding the real environment.
-export function loadEnv() {
-  const file = join(ROOT, ".env");
-  if (!existsSync(file)) return;
-  for (const line of readFileSync(file, "utf8").split("\n")) {
-    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*)\s*$/);
-    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2];
-  }
-}
 
 export function bootedUdid(): string {
   const out = JSON.parse(execFileSync("xcrun", ["simctl", "list", "devices", "booted", "-j"], { encoding: "utf8" }));
@@ -48,17 +39,20 @@ export function loadSession(udidFlag?: string): Session {
 }
 
 export function save(s: Session, screen: Screen) {
-  mkdirSync(STATE_DIR, { recursive: true });
-  writeFileSync(sessionFile(s.udid), JSON.stringify({ session: s, screen }));
+  mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
+  writeFileSync(sessionFile(s.udid), JSON.stringify({ session: s, screen }), { mode: 0o600 });
+  chmodSync(sessionFile(s.udid), 0o600);  // mode is only applied on create; the file holds the launch token
 }
 
 export function lastScreen(s: Session): Screen | undefined {
   return JSON.parse(readFileSync(sessionFile(s.udid), "utf8")).screen;
 }
 
+// Reads are GET; anything that acts is POST. Every request carries the per-launch token.
 export async function get<T>(s: Session, path: string): Promise<T> {
   let r: Response;
-  try { r = await fetch(`http://127.0.0.1:${s.port}${path}`); }
+  const method = /^\/(screen|debug)\b/.test(path) ? "GET" : "POST";
+  try { r = await fetch(`http://127.0.0.1:${s.port}${path}`, { method, headers: { "X-Simflick-Token": s.token } }); }
   catch { throw new SimflickError(`no app listening on port ${s.port}; relaunch with \`simflick launch\``); }
   if (!r.ok) throw new SimflickError(`${path} -> HTTP ${r.status}`);
   return r.json() as Promise<T>;
@@ -66,13 +60,14 @@ export async function get<T>(s: Session, path: string): Promise<T> {
 
 export async function launch(bundleId: string, udid: string, port: number): Promise<Session> {
   if (!existsSync(DYLIB)) throw new SimflickError(`missing ${DYLIB}; run ./build.sh`);
+  const token = randomBytes(24).toString("hex");
   execFileSync("xcrun", ["simctl", "launch", "--terminate-running-process", udid, bundleId], {
-    env: { ...process.env, SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: DYLIB, SIMCTL_CHILD_SIMFLICK_PORT: String(port) }, stdio: "ignore",
+    env: { ...process.env, SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: DYLIB, SIMCTL_CHILD_SIMFLICK_PORT: String(port), SIMCTL_CHILD_SIMFLICK_TOKEN: token }, stdio: "ignore",
   });
-  const s: Session = { udid, port, bundleId };
+  const s: Session = { udid, port, bundleId, token };
   for (let i = 0; i < 150; i++) {
-    if (await fetch(`http://127.0.0.1:${port}/screen`).then((r) => r.ok, () => false)) {
-      mkdirSync(STATE_DIR, { recursive: true });
+    if (await fetch(`http://127.0.0.1:${port}/screen`, { headers: { "X-Simflick-Token": token } }).then((r) => r.ok, () => false)) {
+      mkdirSync(STATE_DIR, { recursive: true, mode: 0o700 });
       writeFileSync(join(STATE_DIR, "current"), udid);
       save(s, await settled(s));
       return s;

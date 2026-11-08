@@ -1,7 +1,7 @@
 #!/usr/bin/env node
 // simflick CLI: launch an app with the injected library, read the screen, act on it, or run a goal.
 import {
-  El, Screen, SimflickError, bootedUdid, describe, get, keyOf, lastScreen, launch, loadEnv, loadSession,
+  El, Screen, SimflickError, bootedUdid, describe, get, keyOf, lastScreen, launch, loadSession,
   save, scrollArea, settled, swipe, tapElement, tapPoint, typeText,
 } from "./core.js";
 import { run } from "./run.js";
@@ -51,7 +51,6 @@ function print(sc: Screen) {
 }
 
 async function main() {
-  loadEnv();
   const { pos, flags } = args();
   const [cmd, ...rest] = pos;
   const udid = typeof flags.udid === "string" ? flags.udid : undefined;

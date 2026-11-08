@@ -194,7 +194,11 @@ static void Dump(UIView *v, int depth, NSMutableArray *out) {
   if (!v.hidden) for (UIView *sub in v.subviews) Dump(sub, depth + 1, out);
 }
 
+static NSString *gToken;
+
 static void *Serve(void *arg) {
+  gToken = getenv("SIMFLICK_TOKEN") ? @(getenv("SIMFLICK_TOKEN")) : nil;
+  if (!gToken.length) NSLog(@"[simflick] no SIMFLICK_TOKEN set; any local process can drive this app");
   int port = getenv("SIMFLICK_PORT") ? atoi(getenv("SIMFLICK_PORT")) : 8765;
   int fd = socket(AF_INET, SOCK_STREAM, 0), one = 1;
   setsockopt(fd, SOL_SOCKET, SO_REUSEADDR, &one, sizeof one);
@@ -205,10 +209,28 @@ static void *Serve(void *arg) {
     int cl = accept(fd, NULL, NULL); if (cl < 0) continue;
     char buf[2048]; ssize_t n = recv(cl, buf, sizeof buf - 1, 0); buf[n > 0 ? n : 0] = 0;
     __block NSData *body = nil;
-    NSArray *line = [[NSString stringWithUTF8String:buf] componentsSeparatedByString:@" "];
+    NSString *req = [NSString stringWithUTF8String:buf] ?: @"";
+    NSArray *line = [[req componentsSeparatedByString:@"\r\n"].firstObject componentsSeparatedByString:@" "];
+    NSString *method = line.firstObject;
     NSURLComponents *u = line.count > 1 ? [NSURLComponents componentsWithString:line[1]] : nil;
     NSMutableDictionary *q = [NSMutableDictionary dictionary];
     for (NSURLQueryItem *it in u.queryItems) if (it.value) q[it.name] = it.value;
+    NSMutableDictionary *h = [NSMutableDictionary dictionary];
+    for (NSString *l in [req componentsSeparatedByString:@"\r\n"]) {
+      NSRange c = [l rangeOfString:@":"];
+      if (c.location != NSNotFound) h[[l substringToIndex:c.location].lowercaseString] = [[l substringFromIndex:c.location + 1] stringByTrimmingCharactersInSet:NSCharacterSet.whitespaceCharacterSet];
+    }
+    // Browsers can reach 127.0.0.1 too: require the launch token, a local Host (DNS rebinding), no Origin
+    // (any web page), and POST for anything that acts.
+    NSString *host = [h[@"host"] componentsSeparatedByString:@":"].firstObject ?: @"";
+    int status = 0;
+    if (h[@"origin"] || !([host isEqualToString:@"127.0.0.1"] || [host isEqualToString:@"localhost"])) status = 403;
+    else if (gToken.length && ![h[@"x-simflick-token"] isEqualToString:gToken]) status = 401;
+    else if (![u.path isEqualToString:@"/screen"] && ![u.path isEqualToString:@"/debug"] && ![method isEqualToString:@"POST"]) status = 405;
+    if (status) {
+      NSString *r = [NSString stringWithFormat:@"HTTP/1.1 %d Rejected\r\nContent-Length: 0\r\nConnection: close\r\n\r\n", status];
+      send(cl, r.UTF8String, strlen(r.UTF8String), 0); close(cl); continue;
+    }
     if ([u.path isEqualToString:@"/screen"]) dispatch_sync(dispatch_get_main_queue(), ^{ @autoreleasepool { body = Screen(); } });
     else if ([u.path isEqualToString:@"/debug"]) dispatch_sync(dispatch_get_main_queue(), ^{
       NSMutableArray *lines = [NSMutableArray array];
