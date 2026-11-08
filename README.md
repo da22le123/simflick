@@ -22,7 +22,11 @@ node dist/cli.js screen               # numbered table; numbers work with tap
 node dist/cli.js tap 7 --screen       # or a testID, or x,y
 node dist/cli.js scroll S0 down
 node dist/cli.js type "hello"         # refuses unless a text field is focused
+node dist/cli.js run "<goal>" --shot  # decision loop (needs TYPESAFE_API_KEY in .env); trace + end screenshot
 ```
+
+`run` writes `~/.simflick/runs/<time>.json`: per step the action and what was on screen (`--full-trace` keeps
+the whole screen per step; the final entry always does). `--shot` adds an end-state PNG.
 
 Every action re-checks its target on a fresh read, then waits for the screen to change and settle
 (nothing animating, two identical reads). Element numbers refer to the last `screen` output.

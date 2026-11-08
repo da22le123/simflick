@@ -15,6 +15,7 @@ const USAGE = `usage: simflick <command>
   type "text"                                type into the focused field (via axe for now)
   wait                                       wait until the screen stops changing
   run "<goal>" [--max-steps 60]              let the decision model drive until DONE/BLOCKED
+      [--shot] [--full-trace]                end-state screenshot; full screen per step in the trace
 Every action waits for the screen to settle; --screen prints it afterwards.`;
 
 function args() {
@@ -107,7 +108,7 @@ async function main() {
   } else if (cmd === "run") {
     const goal = rest.join(" ");
     if (!goal) throw new SimflickError('usage: simflick run "<goal>" [--max-steps 60]');
-    const result = await run(s, goal, Number(flags["max-steps"] ?? 60));
+    const result = await run(s, goal, { maxSteps: Number(flags["max-steps"] ?? 60), fullTrace: !!flags["full-trace"], shot: !!flags.shot });
     process.exit(result === "done" ? 0 : 4);
   }
   if (flags.screen && sc) print(sc);

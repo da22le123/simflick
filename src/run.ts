@@ -1,4 +1,5 @@
 // Goal-driven loop, ported from jev-ultrafast: TypeSafe picks operation + target, a small LLM writes text.
+import { execFileSync } from "node:child_process";
 import { mkdirSync, writeFileSync } from "node:fs";
 import { homedir } from "node:os";
 import { join } from "node:path";
@@ -148,10 +149,14 @@ async function fieldText(goal: string, field: El, sc: Screen, history: Step[]): 
 }
 
 // Trace = what was actually on screen after each step; checks read this, not the model's DONE.
-type TraceEntry = { step: number; operation: string; action: string; text: string[]; ids: string[] };
-const snap = (sc: Screen) => ({ text: sc.text, ids: sc.elements.map((e) => e.id).filter(Boolean) });
+type TraceEntry = { step: number; operation: string; action: string; text: string[]; ids: string[]; screen?: Screen };
 
-export async function run(s: Session, goal: string, maxSteps = 60): Promise<"done" | "blocked"> {
+export type RunOpts = { maxSteps?: number; fullTrace?: boolean; shot?: boolean };
+
+export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise<"done" | "blocked"> {
+  const maxSteps = opts.maxSteps ?? 60;
+  // Per-step entries are trimmed unless --full-trace; the final entry always keeps the full screen.
+  const snap = (sc: Screen) => ({ text: sc.text, ids: sc.elements.map((e) => e.id).filter(Boolean), ...(opts.fullTrace ? { screen: sc } : {}) });
   const history: Step[] = [];
   const trace: TraceEntry[] = [];
   const t0 = performance.now();
@@ -159,14 +164,25 @@ export async function run(s: Session, goal: string, maxSteps = 60): Promise<"don
   trace.push({ step: 0, operation: "START", action: "", ...snap(sc) });
   const dir = join(homedir(), ".simflick", "runs");
   const file = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
-  const flush = (result: string) => { mkdirSync(dir, { recursive: true }); writeFileSync(file, JSON.stringify({ goal, result, trace }, null, 1)); console.log(`trace: ${file}`); };
+  const flush = async (result: string) => {
+    mkdirSync(dir, { recursive: true });
+    const final = await settled(s);
+    trace[trace.length - 1].screen = final;
+    let shot: string | undefined;
+    if (opts.shot) {
+      shot = file.replace(/\.json$/, ".png");
+      execFileSync("xcrun", ["simctl", "io", s.udid, "screenshot", shot], { stdio: "ignore" });
+    }
+    writeFileSync(file, JSON.stringify({ goal, result, ...(shot ? { screenshot: shot } : {}), trace }, null, 1));
+    console.log(`trace: ${file}${shot ? `\nscreenshot: ${shot}` : ""}`);
+  };
   for (let n = 1; n <= maxSteps; n++) {
     const d = await choose(s, sc, goal, history);
     const label = d.target ? `${describe(d.target as El)}${"dir" in d.target ? ` (was out of view, ${d.target.dir})` : ""}${d.target.context ? ` — ${d.target.context}` : ""}` : (d.control?.label ?? d.operation).split(";")[0];
     if (d.operation === "DONE" || d.operation === "BLOCKED") {
       console.log(`${String(n).padStart(2)} ${d.operation}  (decide ${d.decide_ms} ms, p=${d.p.toFixed(2)}, ${d.model})`);
       console.log(`${d.operation.toLowerCase()} after ${history.length} actions in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
-      flush(d.operation.toLowerCase());
+      await flush(d.operation.toLowerCase());
       return d.operation === "DONE" ? "done" : "blocked";
     }
     const before = keyOf(sc);
@@ -192,11 +208,11 @@ export async function run(s: Session, goal: string, maxSteps = 60): Promise<"don
     const last3 = history.slice(-3);
     if (last3.length === 3 && last3.every((h) => !h.page_changed && h.kind !== "WAIT")) {
       console.log("blocked: 3 actions in a row changed nothing");
-      flush("blocked");
+      await flush("blocked");
       return "blocked";
     }
   }
   console.log(`blocked: reached ${maxSteps} steps`);
-  flush("blocked");
+  await flush("blocked");
   return "blocked";
 }
