@@ -343,6 +343,7 @@ static NSData *Screen(void) {
     for (NSDictionary *e in c.els) {
       CGRect ef = CGRectMake([e[@"frame"][0] doubleValue], [e[@"frame"][1] doubleValue], [e[@"frame"][2] doubleValue], [e[@"frame"][3] doubleValue]);
       if (!CGRectContainsPoint(cf, CGPointMake(CGRectGetMidX(ef), CGRectGetMidY(ef)))) continue;
+      if (![e[@"in"] isEqualToString:cell[@"in"]]) continue;  // e.g. the tab bar over a cell's lower edge
       [inside addObject:[NSValue valueWithCGRect:ef]];
       // Skip counters ("491", "5 · 238"): they don't say what the row is.
       if (words.count < 3) for (NSString *w in @[e[@"label"] ?: @"", e[@"context"] ?: @""])
@@ -350,6 +351,17 @@ static NSData *Screen(void) {
     }
     if (!words.count) continue;
     if (cell[@"group"] && inside.count < 2) continue;
+    // Redundant rows: a cell that is basically one control, or that hosts its own scroll area (a carousel).
+    BOOL oneControl = NO, hostsScroll = NO;
+    for (NSValue *ev in inside) {
+      CGRect ef = [ev CGRectValue];
+      if (ef.size.width * ef.size.height >= 0.7 * cf.size.width * cf.size.height) oneControl = YES;
+    }
+    for (NSDictionary *sc in c.scrolls) {
+      CGRect sf = CGRectMake([sc[@"frame"][0] doubleValue], [sc[@"frame"][1] doubleValue], [sc[@"frame"][2] doubleValue], [sc[@"frame"][3] doubleValue]);
+      if (![sc[@"ref"] isEqualToString:cell[@"in"]] && CGRectContainsPoint(cf, CGPointMake(CGRectGetMidX(sf), CGRectGetMidY(sf)))) hostsScroll = YES;
+    }
+    if (oneControl || hostsScroll || inside.count == 1) continue;  // a single inner control already is the row
     BOOL dupRow = NO;
     for (NSDictionary *e in c.els) if ([e[@"kind"] isEqualToString:@"row"]) {
       CGRect rf = CGRectMake([e[@"frame"][0] doubleValue], [e[@"frame"][1] doubleValue], [e[@"frame"][2] doubleValue], [e[@"frame"][3] doubleValue]);
