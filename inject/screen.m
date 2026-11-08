@@ -203,6 +203,16 @@ static void WalkAX(id el, UIView *owner, CGRect clip, NSDictionary *myScroll, Ct
     Consider(el, owner, frame, CGRectIntersection(frame, clip), myScroll, c, siblings.count < 8 ? SiblingText(siblings, el) : @"");
   }
   NSArray *kids = AXChildren(el);
+  // A non-element container with several children (e.g. one post: header, text, buttons) is a candidate
+  // "open item" row; rows are only kept later if they hold several elements and a free spot to tap.
+  if (gRejects && ![el isAccessibilityElement] && kids.count >= 2)
+    [gRejects addObject:@{@"container": NSStringFromClass([el class]), @"kids": @(kids.count), @"frame": R([el respondsToSelector:@selector(accessibilityFrame)] ? [el accessibilityFrame] : CGRectNull), @"inScroll": @(myScroll != nil)}];
+  if (![el isAccessibilityElement] && kids.count >= 2 && myScroll && [el respondsToSelector:@selector(accessibilityFrame)]) {
+    CGRect gf = CGRectIntersection([el accessibilityFrame], clip);
+    CGRect screen = UIScreen.mainScreen.bounds;
+    if (!CGRectIsEmpty(gf) && gf.size.height >= 50 && gf.size.height < screen.size.height * 0.7 && gf.size.width >= screen.size.width * 0.6)
+      [c->cells addObject:@{@"frame": [NSValue valueWithCGRect:gf], @"in": myScroll[@"ref"], @"group": @YES}];
+  }
   for (id k in kids) if (![k isKindOfClass:UIView.class]) WalkAX(k, owner, clip, myScroll, c, depth + 1, kids);
 }
 
@@ -339,6 +349,14 @@ static NSData *Screen(void) {
         if (w.length > 2 && [w rangeOfString:@"[A-Za-z\\p{L}]{2}" options:NSRegularExpressionSearch].location != NSNotFound && ![words containsObject:w]) [words addObject:w];
     }
     if (!words.count) continue;
+    if (cell[@"group"] && inside.count < 2) continue;
+    BOOL dupRow = NO;
+    for (NSDictionary *e in c.els) if ([e[@"kind"] isEqualToString:@"row"]) {
+      CGRect rf = CGRectMake([e[@"frame"][0] doubleValue], [e[@"frame"][1] doubleValue], [e[@"frame"][2] doubleValue], [e[@"frame"][3] doubleValue]);
+      CGRect ov = CGRectIntersection(rf, cf);
+      if (!CGRectIsEmpty(ov) && ov.size.width * ov.size.height > 0.8 * MIN(rf.size.width * rf.size.height, cf.size.width * cf.size.height)) dupRow = YES;
+    }
+    if (dupRow) continue;
     // Tap a free spot (on no element) nearest the cell's middle: where a person taps to open the row.
     CGPoint best = CGPointZero; double bestD = 1e9;
     for (int gx = 1; gx < 8; gx++) for (int gy = 1; gy < 6; gy++) {
@@ -356,6 +374,39 @@ static NSData *Screen(void) {
     if (label.length > 160) label = [label substringToIndex:160];
     [c.els addObject:@{@"kind": @"row", @"id": @"", @"label": label, @"frame": R(cf), @"tap": @[N(best.x), N(best.y)], @"in": cell[@"in"]}];
   }
+  // An element whose area contains other elements is a container (e.g. a whole post as one button). Its own
+  // activation point often sits on an inner control (the avatar), so: label it from its contents, tap a free spot.
+  NSMutableArray *rebuilt = [NSMutableArray array];
+  for (NSDictionary *e in c.els) {
+    if ([e[@"kind"] isEqualToString:@"row"] || [e[@"kind"] isEqualToString:@"input"]) { [rebuilt addObject:e]; continue; }
+    CGRect cf = CGRectMake([e[@"frame"][0] doubleValue], [e[@"frame"][1] doubleValue], [e[@"frame"][2] doubleValue], [e[@"frame"][3] doubleValue]);
+    NSMutableArray *inside = [NSMutableArray array], *words = [NSMutableArray array];
+    for (NSDictionary *o in c.els) {
+      if (o == e) continue;
+      CGRect of = CGRectMake([o[@"frame"][0] doubleValue], [o[@"frame"][1] doubleValue], [o[@"frame"][2] doubleValue], [o[@"frame"][3] doubleValue]);
+      if (!CGRectContainsRect(CGRectInset(cf, -1, -1), of) || CGRectEqualToRect(of, cf)) continue;
+      [inside addObject:[NSValue valueWithCGRect:of]];
+      for (NSString *w in @[o[@"context"] ?: @"", o[@"label"] ?: @""])
+        if (words.count < 3 && w.length > 2 && [w rangeOfString:@"[A-Za-z\\p{L}]{2}" options:NSRegularExpressionSearch].location != NSNotFound && ![words containsObject:w]) [words addObject:w];
+    }
+    if (inside.count < 2) { [rebuilt addObject:e]; continue; }
+    CGPoint best = CGPointZero; double bestD = 1e9;
+    for (int gx = 1; gx < 8; gx++) for (int gy = 1; gy < 8; gy++) {
+      CGPoint p = CGPointMake(CGRectGetMinX(cf) + cf.size.width * gx / 8, CGRectGetMinY(cf) + cf.size.height * gy / 8);
+      BOOL onEl = NO;
+      for (NSValue *ev in inside) if (CGRectContainsPoint(CGRectInset([ev CGRectValue], -4, -4), p)) { onEl = YES; break; }
+      if (onEl || !HitAt(p, c.windows)) continue;
+      double d = hypot(p.x - CGRectGetMidX(cf), p.y - CGRectGetMidY(cf));
+      if (d < bestD) { bestD = d; best = p; }
+    }
+    if (bestD >= 1e9) { [rebuilt addObject:e]; continue; }
+    NSMutableDictionary *m = [e mutableCopy];
+    m[@"kind"] = @"row";
+    if (![e[@"label"] length]) { NSString *l = [words componentsJoinedByString:@" · "]; m[@"label"] = l.length > 160 ? [l substringToIndex:160] : l; }
+    m[@"tap"] = @[N(best.x), N(best.y)];
+    [rebuilt addObject:m];
+  }
+  [c.els setArray:rebuilt];
   // SwiftUI views with only a tap gesture have no element; their visible text is the best handle.
   NSMutableArray *textItems = [NSMutableArray array];
   for (NSDictionary *t in c.shownTexts) {

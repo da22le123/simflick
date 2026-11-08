@@ -236,14 +236,17 @@ export async function swipe(s: Session, x1: number, y1: number, x2: number, y2: 
 export async function typeText(s: Session, text: string, replace = false): Promise<{ screen: Screen; value: string }> {
   const now = await get<Screen>(s, "/screen");
   // Without a focused field, keystrokes hit the app (in RN dev builds "r" reloads, "d" opens the dev menu).
-  if (!now.keyboard.focused) throw new SimflickError("no text field is focused; tap one first", 2);
-  const current = now.elements.find((e) => e.kind === "input" && e.id === now.keyboard.focused)?.value ?? "";
+  // focused can be "" (a field without an id): only undefined means nothing has focus.
+  if (now.keyboard.focused === undefined) throw new SimflickError("no text field is focused; tap one first", 2);
+  const focusedInput = (sc: Screen) => sc.elements.find((e) => e.kind === "input" && e.id === sc.keyboard.focused);
+  const current = focusedInput(now)?.value ?? "";
   if (replace && current) execFileSync("axe", ["key-combo", "--modifiers", "227", "--key", "4", "--udid", s.udid], { stdio: "ignore" });
   execFileSync("axe", ["type", text, "--udid", s.udid], { stdio: "ignore" });
   const sc = await settled(s, keyOf(now));
   save(s, sc);
-  const value = sc.elements.find((e) => e.kind === "input" && e.id === sc.keyboard.focused)?.value ?? "";
+  const value = focusedInput(sc)?.value ?? "";
   // Controlled RN inputs can drop keystrokes while JS is busy; report what actually landed.
-  if (!value.endsWith(text)) throw new SimflickError(`typed ${JSON.stringify(text)} but the field now holds ${JSON.stringify(value)}`, 3);
+  // iOS may autocapitalise the first letter: a case-only difference still means the text landed.
+  if (!value.toLowerCase().endsWith(text.toLowerCase())) throw new SimflickError(`typed ${JSON.stringify(text)} but the field now holds ${JSON.stringify(value)}`, 3);
   return { screen: sc, value };
 }

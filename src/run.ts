@@ -139,6 +139,23 @@ async function choose(s: Session, sc: Screen, goal: string, history: Step[]) {
 }
 
 // Text for TYPE_TEXT: any OpenAI-compatible endpoint (TEXT_MODEL_*), else Anthropic Haiku.
+// Without a text model: the values to type must be quoted in the goal; TypeSafe picks which one fits this field.
+async function quotedValue(goal: string, field: El, sc: Screen, history: Step[]): Promise<string> {
+  const quoted = [...goal.matchAll(/["“”']([^"“”']{1,500})["“”']/g)].map((m) => m[1]);
+  const values = [...new Set(quoted)];
+  if (!values.length) throw new SimflickError('TYPE_TEXT needs a quoted value in the goal (e.g. search "cats") or a text model key; nothing typed');
+  if (values.length === 1) return values[0];
+  const criteria = Object.fromEntries(values.map((v, i) => [String(i + 1), { value: v }]));
+  const res = await postJson("https://api.typesafe.ai/v1/systemone", process.env.TYPESAFE_API_KEY!, {
+    model: process.env.TYPESAFE_MODEL ?? "jev-latest",
+    state: { page: { text: sc.text.join("\n").slice(0, 4000) }, field: { label: elLabel(field), value: field.value ?? "" },
+             recent_actions: history.slice(-10).map(({ action, kind, text }) => ({ action, kind, text })) },
+    questions: { value: { type: "choice", criteria, instructions: { goal, rules: "Choose the quoted value from the goal that belongs in this field now." } } },
+  });
+  const pick = validChoice(res.answers?.value, Object.keys(criteria));
+  return values[Number(pick.choice) - 1];
+}
+
 async function fieldText(goal: string, field: El, sc: Screen, history: Step[]): Promise<string> {
   const context = JSON.stringify({ goal, field: { label: elLabel(field), value: field.value ?? "" }, screen: sc.text.join("\n").slice(0, 6000), recent_actions: history.slice(-6).map(({ action, text }) => ({ action, text })) });
   let raw: string;
@@ -154,7 +171,7 @@ async function fieldText(goal: string, field: El, sc: Screen, history: Step[]): 
       model: process.env.TEXT_MODEL ?? "claude-haiku-5-5", max_tokens: 512, system: TEXT_VALUE, messages: [{ role: "user", content: context }],
     }, { "x-api-key": process.env.ANTHROPIC_API_KEY, "anthropic-version": "2023-06-01" });
     raw = r.content?.[0]?.text ?? "";
-  } else throw new SimflickError("TYPE_TEXT needs TEXT_MODEL_API_KEY or ANTHROPIC_API_KEY; nothing typed");
+  } else return quotedValue(goal, field, sc, history);
   try {
     const out = JSON.parse(raw.slice(raw.indexOf("{"), raw.lastIndexOf("}") + 1));
     if (Object.keys(out).length === 1 && typeof out.text === "string" && out.text.trim() && out.text.length <= 2000) return out.text;
@@ -211,14 +228,15 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
         sc = await tapPoint(s, t.tap[0], t.tap[1], keyOf(fresh));
       } else if (d.operation === "CLICK") sc = await revealAndTap(s, d.target!);
       else if (d.operation === "TYPE_TEXT") {
-        if (sc.keyboard.focused !== d.target!.id) sc = await tapElement(s, d.target as El);
+        if (sc.keyboard.focused === undefined || sc.keyboard.focused !== d.target!.id) sc = await tapElement(s, d.target as El);
         text = await fieldText(goal, d.target as El, sc, history);
         sc = (await typeText(s, text, true)).screen;
       } else if (d.control?.kind === "scroll") sc = await scrollArea(s, d.control.ref!, d.control.dir!);
       else { await sleep(300); sc = await settled(s); }
     } catch (e) {
       // A stale target is not fatal: re-observe and decide again, as Jev does.
-      if (e instanceof SimflickError && e.code === 2) { console.log(`${String(n).padStart(2)} stale: ${e.message}; re-reading`); sc = await settled(s); continue; }
+      // Stale targets (2) and typing that didn't fully land (3) are recoverable: re-observe and decide again.
+      if (e instanceof SimflickError && (e.code === 2 || e.code === 3)) { console.log(`${String(n).padStart(2)} ${e.code === 2 ? "stale" : "typing"}: ${e.message}; re-reading`); sc = await settled(s); continue; }
       throw e;
     }
     const step: Step = { step: n, action: label, kind: d.operation, text, page_changed: keyOf(sc) !== before, decide_ms: d.decide_ms, act_ms: Math.round(performance.now() - a0), p: d.p };
