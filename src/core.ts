@@ -140,11 +140,23 @@ export async function tapElement(s: Session, want: El): Promise<Screen> {
   return tapPoint(s, match.tap[0], match.tap[1], keyOf(fresh));
 }
 
+export let lastTapFellBack = false;
+
 export async function tapPoint(s: Session, x: number, y: number, before?: string): Promise<Screen> {
   before ??= keyOf(await get<Screen>(s, "/screen"));
   const r = await get<{ ok: boolean }>(s, `/tap?x=${x}&y=${y}`);
   if (!r.ok) throw new SimflickError(`tap at ${x},${y} hit nothing`);
-  const sc = await settled(s, before);
+  let sc = await settled(s, before);
+  lastTapFellBack = false;
+  // Some SwiftUI controls (e.g. buttons inside a ScrollView) ignore the synthetic in-app touch. If nothing
+  // changed, repeat the tap as a real system touch via axe (slower, ~1.3 s).
+  if (keyOf(sc) === before) {
+    try {
+      execFileSync("axe", ["tap", "-x", String(Math.round(x)), "-y", String(Math.round(y)), "--udid", s.udid], { stdio: "ignore" });
+      sc = await settled(s, before);
+      lastTapFellBack = true;
+    } catch { /* axe missing: keep the in-app result */ }
+  }
   save(s, sc);
   return sc;
 }

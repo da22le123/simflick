@@ -29,9 +29,9 @@ static UIView *HitAt(CGPoint p, NSArray<UIWindow *> *windows) {
   return nil;
 }
 
-static NSString *Kind(UIView *v) {
+static NSString *Kind(id v) {
   if ([v conformsToProtocol:@protocol(UITextInput)]) return @"input";
-  UIAccessibilityTraits t = v.accessibilityTraits;
+  UIAccessibilityTraits t = [v accessibilityTraits];
   if (t & UIAccessibilityTraitButton) return @"button";
   if (t & UIAccessibilityTraitLink) return @"link";
   if (t & UIAccessibilityTraitAdjustable) return @"adjustable";
@@ -47,23 +47,24 @@ static NSString *NearestId(UIView *v) {
 
 NSData *SRHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q);
 
-typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn, *ahead; NSMutableArray *hidden; UIView *focused; BOOL animating; } Ctx;
+typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn, *ahead; NSMutableArray *hidden, *axTexts; UIView *focused; BOOL animating; } Ctx;
 
 // Skips text owned by other tappable elements (e.g. a neighbouring tab), which would mislabel this one.
-static void CollectText(UIView *v, UIView *self_, NSMutableArray *out, int depth) {
+static void CollectText(UIView *v, UIView *self_, NSMutableArray *out, int depth, BOOL offscreenOK) {
   if (depth > 10 || out.count > 6 || v.hidden || v.alpha < 0.01 || v.layer.presentationLayer.opacity < 0.01) return;
   if (v != self_ && v.isAccessibilityElement && ![NSStringFromClass(v.class) containsString:@"Paragraph"]) return;
   if ([NSStringFromClass(v.class) containsString:@"Paragraph"]) {
     // Closed sheets park their text off screen; only count text that is on screen.
     CGRect f = [v convertRect:v.bounds toView:nil];
-    if (v.accessibilityLabel.length && v.window && CGRectIntersectsRect(f, v.window.bounds)) [out addObject:v.accessibilityLabel];
+    if (v.accessibilityLabel.length && v.window && (offscreenOK || CGRectIntersectsRect(f, v.window.bounds))) [out addObject:v.accessibilityLabel];
     return;
   }
-  for (UIView *sub in v.subviews) CollectText(sub, self_, out, depth + 1);
+  for (UIView *sub in v.subviews) CollectText(sub, self_, out, depth + 1, offscreenOK);
 }
 
 // Text of the card/row an element belongs to: climb until other text appears, stop before list-wide levels.
-static NSString *ContextFor(UIView *v, NSString *own) {
+// offscreenOK: describing a scrolled-away item, whose own text is off screen too.
+static NSString *ContextFor(UIView *v, NSString *own, BOOL offscreenOK) {
   // Nested inside an accessible card (e.g. a "⋯" menu): the card's label is the best context.
   for (UIView *p = v.superview; p && ![p isKindOfClass:UIScrollView.class]; p = p.superview)
     if (p.isAccessibilityElement && p.accessibilityLabel.length) return p.accessibilityLabel;
@@ -71,13 +72,112 @@ static NSString *ContextFor(UIView *v, NSString *own) {
   for (int i = 0; a && i < 5; i++, a = a.superview) {
     if ([a isKindOfClass:UIScrollView.class] || [a isKindOfClass:UIWindow.class]) break;
     NSMutableArray *t = [NSMutableArray array];
-    CollectText(a, v, t, 0);
+    CollectText(a, v, t, 0, offscreenOK);
     if (t.count > 6) break;
     [t removeObject:own ?: @""];
     if (t.count) { NSString *j = [t componentsJoinedByString:@" · "]; return j.length > 100 ? [j substringToIndex:100] : j; }
   }
   return @"";
 }
+// One on-screen candidate: a UIView, or a non-view accessibility element owned by `owner` (SwiftUI).
+static void Consider(id obj, UIView *owner, CGRect frame, CGRect vis, NSDictionary *myScroll, Ctx *c, NSString *axCtx) {
+  BOOL isView = [obj isKindOfClass:UIView.class];
+  UIView *v = isView ? obj : nil;
+  NSString *label = [obj accessibilityLabel] ?: @"";
+  NSString *ident = isView ? NearestId(v) : ([obj respondsToSelector:@selector(accessibilityIdentifier)] ? ([obj accessibilityIdentifier] ?: @"") : @"");
+  BOOL shown = NO; CGPoint tap = CGPointZero;
+  if (!CGRectIsEmpty(vis) && vis.size.width >= 2 && vis.size.height >= 2) {
+    CGPoint pts[5] = {{CGRectGetMidX(vis), CGRectGetMidY(vis)},
+      {CGRectGetMinX(vis) + vis.size.width * .25, CGRectGetMinY(vis) + vis.size.height * .25},
+      {CGRectGetMaxX(vis) - vis.size.width * .25, CGRectGetMinY(vis) + vis.size.height * .25},
+      {CGRectGetMinX(vis) + vis.size.width * .25, CGRectGetMaxY(vis) - vis.size.height * .25},
+      {CGRectGetMaxX(vis) - vis.size.width * .25, CGRectGetMaxY(vis) - vis.size.height * .25}};
+    for (int i = 0; i < 5 && !shown; i++) {
+      UIView *hit = HitAt(pts[i], c->windows);
+      // Covered = the hit lands on an unrelated view; a hit on an ancestor means it just isn't touchable.
+      if (hit && ([hit isDescendantOfView:owner] || [owner isDescendantOfView:hit])) { shown = YES; tap = pts[i]; }
+    }
+  }
+  // Tap where iOS says the element activates (VoiceOver's point), e.g. the switch of a SwiftUI Toggle row.
+  if (shown) {
+    CGPoint ap = [obj accessibilityActivationPoint];
+    if (CGRectContainsPoint(CGRectInset(vis, 1, 1), ap)) {
+      UIView *hit = HitAt(ap, c->windows);
+      if (hit && ([hit isDescendantOfView:owner] || [owner isDescendantOfView:hit])) tap = ap;
+    }
+  }
+  // Drop slivers: under a third showing and too thin to tap reliably.
+  CGFloat frac = frame.size.width * frame.size.height > 0 ? (vis.size.width * vis.size.height) / (frame.size.width * frame.size.height) : 0;
+  if (shown && frac < 0.33 && (vis.size.height < 24 || vis.size.width < 24)) shown = NO;
+  NSString *kind = Kind(obj);
+  // Non-view text/headers (SwiftUI) are page text and context sources, not things to act on.
+  if (!isView && ([kind isEqualToString:@"text"] || [kind isEqualToString:@"header"])) {
+    if (shown && label.length) [c->texts addObject:label];
+    if (label.length && myScroll) [c->axTexts addObject:@{@"label": label, @"frame": R(frame), @"in": myScroll[@"ref"]}];
+    return;
+  }
+  if (shown) {
+    NSMutableDictionary *e = [@{@"kind": kind, @"id": ident, @"label": label,
+                                @"frame": R(frame), @"tap": @[@(round(tap.x)), @(round(tap.y))]} mutableCopy];
+    if (!CGRectEqualToRect(CGRectIntegral(vis), CGRectIntegral(frame))) e[@"clipped"] = @YES;
+    NSString *val = [obj accessibilityValue];
+    // Switches (UISwitch, SwiftUI Toggle) report "1"/"0"; spell it out so a model can tell the state.
+    if ([obj isKindOfClass:UISwitch.class] || (([obj accessibilityTraits] & UIAccessibilityTraitButton) && ([val isEqualToString:@"1"] || [val isEqualToString:@"0"]))) {
+      e[@"kind"] = @"switch"; val = [val isEqualToString:@"1"] ? @"on" : @"off";
+    }
+    if (val.length) e[@"value"] = val;
+    if (myScroll) e[@"in"] = myScroll[@"ref"];
+    // Context only where it disambiguates (list/carousel items, nested buttons); tabs and headers get none.
+    BOOL nested = NO;
+    for (UIView *p = v.superview; p && !nested; p = p.superview) nested = p.isAccessibilityElement;
+    NSString *ctx = isView ? ((myScroll || nested) ? ContextFor(v, label, NO) : @"") : (myScroll ? axCtx : @"");
+    if (ctx.length) e[@"context"] = ctx;
+    if ([obj accessibilityTraits] & UIAccessibilityTraitSelected) e[@"selected"] = @YES;
+    [c->els addObject:e];
+  } else if (myScroll) {
+    c->hiddenIn[myScroll[@"ref"]] = @([c->hiddenIn[myScroll[@"ref"]] intValue] + 1);
+    CGRect sv = [myScroll[@"vis"] CGRectValue];
+    CGFloat dx = (CGRectGetMidX(frame) - CGRectGetMidX(sv)) / MAX(sv.size.width, 1), dy = (CGRectGetMidY(frame) - CGRectGetMidY(sv)) / MAX(sv.size.height, 1);
+    NSString *dir = fabs(dx) > fabs(dy) ? (dx > 0 ? @"right" : @"left") : (dy > 0 ? @"down" : @"up");
+    NSString *ctx = isView ? ContextFor(v, label, YES) : axCtx;
+    NSMutableArray *list = c->ahead[myScroll[@"ref"]] ?: (c->ahead[myScroll[@"ref"]] = [NSMutableArray array]);
+    if (list.count < 20) [list addObject:@{@"dir": dir, @"what": [@[label, ctx] componentsJoinedByString:@" — "]}];
+    if (c->hidden.count < 200) [c->hidden addObject:@{@"kind": kind, @"id": ident, @"label": label,
+      @"context": ctx, @"frame": R(frame), @"in": myScroll[@"ref"], @"dir": dir}];
+  }
+}
+
+static NSArray *AXChildren(id o) {
+  NSArray *a = [o respondsToSelector:@selector(accessibilityElements)] ? [o accessibilityElements] : nil;
+  if (a.count) return a;
+  NSInteger n = [o respondsToSelector:@selector(accessibilityElementCount)] ? [o accessibilityElementCount] : 0;
+  if (n <= 0 || n == NSNotFound) return @[];
+  NSMutableArray *m = [NSMutableArray array];
+  for (NSInteger i = 0; i < n; i++) { id e = [o accessibilityElementAtIndex:i]; if (e) [m addObject:e]; }
+  return m;
+}
+
+// Context for a SwiftUI element: the static text next to it in the same container (e.g. a card's title).
+static NSString *SiblingText(NSArray *siblings, id self_) {
+  NSMutableArray *t = [NSMutableArray array];
+  for (id s in siblings) {
+    if (s == self_ || [s isKindOfClass:UIView.class] || ![s isAccessibilityElement]) continue;
+    if (([s accessibilityTraits] & UIAccessibilityTraitStaticText) && [[s accessibilityLabel] length]) [t addObject:[s accessibilityLabel]];
+    if (t.count == 3) break;
+  }
+  return [t componentsJoinedByString:@" · "];
+}
+
+static void WalkAX(id el, UIView *owner, CGRect clip, NSDictionary *myScroll, Ctx *c, int depth, NSArray *siblings) {
+  if (depth > 40 || ([el respondsToSelector:@selector(accessibilityElementsHidden)] && [el accessibilityElementsHidden])) return;
+  if ([el isAccessibilityElement]) {
+    CGRect frame = [el accessibilityFrame];  // already in screen coordinates
+    Consider(el, owner, frame, CGRectIntersection(frame, clip), myScroll, c, siblings.count < 8 ? SiblingText(siblings, el) : @"");
+  }
+  NSArray *kids = AXChildren(el);
+  for (id k in kids) if (![k isKindOfClass:UIView.class]) WalkAX(k, owner, clip, myScroll, c, depth + 1, kids);
+}
+
 // The keyboard is drawn by another process; the app only learns its frame from these notifications.
 static CGRect gKeyboard;
 
@@ -114,62 +214,48 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
     NSString *txt = v.accessibilityLabel;
     if (txt.length && hit && ([hit isDescendantOfView:v] || [v isDescendantOfView:hit])) [c->texts addObject:txt];
   }
-  BOOL candidate = v.isAccessibilityElement || [v conformsToProtocol:@protocol(UITextInput)];
-  if (candidate) {
-    BOOL shown = NO; CGPoint tap = CGPointZero;
-    if (!CGRectIsEmpty(vis) && vis.size.width >= 2 && vis.size.height >= 2) {
-      CGPoint pts[5] = {{CGRectGetMidX(vis), CGRectGetMidY(vis)},
-        {CGRectGetMinX(vis) + vis.size.width * .25, CGRectGetMinY(vis) + vis.size.height * .25},
-        {CGRectGetMaxX(vis) - vis.size.width * .25, CGRectGetMinY(vis) + vis.size.height * .25},
-        {CGRectGetMinX(vis) + vis.size.width * .25, CGRectGetMaxY(vis) - vis.size.height * .25},
-        {CGRectGetMaxX(vis) - vis.size.width * .25, CGRectGetMaxY(vis) - vis.size.height * .25}};
-      for (int i = 0; i < 5 && !shown; i++) {
-        UIView *hit = HitAt(pts[i], c->windows);
-        // Covered = the hit lands on an unrelated view; a hit on an ancestor means v just isn't touchable.
-        if (hit && ([hit isDescendantOfView:v] || [v isDescendantOfView:hit])) { shown = YES; tap = pts[i]; }
-      }
-    }
-    // Drop slivers: under a third showing and too thin to tap reliably.
-    CGFloat frac = frame.size.width * frame.size.height > 0 ? (vis.size.width * vis.size.height) / (frame.size.width * frame.size.height) : 0;
-    if (shown && frac < 0.33 && (vis.size.height < 24 || vis.size.width < 24)) shown = NO;
-    if (shown) {
-      NSMutableDictionary *e = [@{@"kind": Kind(v), @"id": NearestId(v), @"label": v.accessibilityLabel ?: @"",
-                                  @"frame": R(frame), @"tap": @[@(round(tap.x)), @(round(tap.y))]} mutableCopy];
-      if (!CGRectEqualToRect(CGRectIntegral(vis), CGRectIntegral(frame))) e[@"clipped"] = @YES;
-      if (v.accessibilityValue.length) e[@"value"] = v.accessibilityValue;
-      if (myScroll) e[@"in"] = myScroll[@"ref"];
-      // Context only where it disambiguates (list/carousel items, nested buttons); tabs and headers get none.
-      BOOL nested = NO;
-      for (UIView *p = v.superview; p && !nested; p = p.superview) nested = p.isAccessibilityElement;
-      NSString *ctx = (myScroll || nested) ? ContextFor(v, v.accessibilityLabel) : @"";
-      if (ctx.length) e[@"context"] = ctx;
-      if (v.accessibilityTraits & UIAccessibilityTraitSelected) e[@"selected"] = @YES;
-      [c->els addObject:e];
-    } else if (myScroll) {
-      c->hiddenIn[myScroll[@"ref"]] = @([c->hiddenIn[myScroll[@"ref"]] intValue] + 1);
-      CGRect sv = [myScroll[@"vis"] CGRectValue];
-      CGFloat dx = (CGRectGetMidX(frame) - CGRectGetMidX(sv)) / MAX(sv.size.width, 1), dy = (CGRectGetMidY(frame) - CGRectGetMidY(sv)) / MAX(sv.size.height, 1);
-      NSString *dir = fabs(dx) > fabs(dy) ? (dx > 0 ? @"right" : @"left") : (dy > 0 ? @"down" : @"up");
-      NSMutableArray *list = c->ahead[myScroll[@"ref"]] ?: (c->ahead[myScroll[@"ref"]] = [NSMutableArray array]);
-      NSString *what = [@[v.accessibilityLabel ?: @"", ContextFor(v, v.accessibilityLabel)] componentsJoinedByString:@" — "];
-      if (list.count < 20) [list addObject:@{@"dir": dir, @"what": what}];
-      if (c->hidden.count < 200) [c->hidden addObject:@{@"kind": Kind(v), @"id": NearestId(v), @"label": v.accessibilityLabel ?: @"",
-        @"context": ContextFor(v, v.accessibilityLabel), @"frame": R(frame), @"in": myScroll[@"ref"], @"dir": dir}];
-    }
-    // Keep descending: an accessible card can contain its own buttons (e.g. a "⋯" menu) that iOS would merge away.
-  }
+  if (v.isAccessibilityElement || [v conformsToProtocol:@protocol(UITextInput)]) Consider(v, v, frame, vis, myScroll, c, nil);
+  // SwiftUI (and some UIKit containers) describe content as accessibility elements that are not views.
+  // RN views are fully covered by the view walk (text included); skipping their AX children keeps reads fast.
+  NSArray *axKids = [NSStringFromClass(v.class) hasPrefix:@"RCT"] ? @[] : AXChildren(v);
+  for (id el in axKids) if (![el isKindOfClass:UIView.class]) WalkAX(el, v, clip, myScroll, c, 0, axKids);
   for (UIView *sub in v.subviews) Walk(sub, clip, myScroll, c);
 }
 
 static NSData *Screen(void) {
   CFTimeInterval t0 = CACurrentMediaTime();
-  Ctx c = {[NSMutableArray array], [NSMutableArray array], [NSMutableArray array], Windows(), [NSMutableDictionary dictionary], [NSMutableDictionary dictionary], [NSMutableArray array]};
+  Ctx c = {[NSMutableArray array], [NSMutableArray array], [NSMutableArray array], Windows(), [NSMutableDictionary dictionary], [NSMutableDictionary dictionary], [NSMutableArray array], [NSMutableArray array]};
   NSMutableArray *wnames = [NSMutableArray array];
   for (UIWindow *w in c.windows) {
     [wnames addObject:NSStringFromClass(w.class)];
     CGRect clip = w.screen.bounds;
     if (!CGRectIsEmpty(CGRectIntersection(gKeyboard, clip))) clip.size.height = MAX(0, CGRectGetMinY(gKeyboard) - clip.origin.y);
     Walk(w, clip, nil, &c);
+  }
+  // Flat SwiftUI stacks give no grouping: label context-less items with the nearest text in the same scroll area.
+  NSMutableArray *all = [NSMutableArray arrayWithArray:c.els];
+  [all addObjectsFromArray:c.hidden];
+  for (NSUInteger i = 0; i < all.count; i++) {
+    NSDictionary *e = all[i];
+    if ([e[@"kind"] isEqualToString:@"text"] || [e[@"context"] length] || !e[@"in"]) continue;
+    NSArray *f = e[@"frame"]; double ex = [f[0] doubleValue] + [f[2] doubleValue] / 2, ey = [f[1] doubleValue] + [f[3] doubleValue] / 2, best = 100;
+    NSString *ctx = nil;
+    for (NSDictionary *t in c.axTexts) {
+      if (![t[@"in"] isEqualToString:e[@"in"]]) continue;
+      NSArray *g = t[@"frame"];
+      double d = hypot([g[0] doubleValue] + [g[2] doubleValue] / 2 - ex, [g[1] doubleValue] + [g[3] doubleValue] / 2 - ey);
+      if (d < best) { best = d; ctx = t[@"label"]; }
+    }
+    if (!ctx) continue;
+    NSMutableDictionary *m = [e mutableCopy]; m[@"context"] = ctx;
+    NSMutableArray *arr = i < c.els.count ? c.els : c.hidden;
+    arr[i < c.els.count ? i : i - c.els.count] = m;
+  }
+  for (NSMutableDictionary *s in c.scrolls) {
+    NSMutableArray *ahead = [NSMutableArray array];
+    for (NSDictionary *h in c.hidden) if ([h[@"in"] isEqualToString:s[@"ref"]] && ahead.count < 20)
+      [ahead addObject:@{@"dir": h[@"dir"], @"what": [@[h[@"label"], h[@"context"] ?: @""] componentsJoinedByString:@" — "]}];
+    c.ahead[s[@"ref"]] = ahead;
   }
   for (NSMutableDictionary *s in c.scrolls) { s[@"hiddenItems"] = c.hiddenIn[s[@"ref"]] ?: @0; s[@"ahead"] = c.ahead[s[@"ref"]] ?: @[]; }
   CGRect sb = UIScreen.mainScreen.bounds;
