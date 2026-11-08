@@ -47,7 +47,7 @@ static NSString *NearestId(UIView *v) {
 
 NSData *SRHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q);
 
-typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn, *ahead; NSMutableArray *hidden, *axTexts, *remote; UIView *focused; BOOL animating; } Ctx;
+typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn, *ahead; NSMutableArray *hidden, *axTexts, *remote; UIView *focused; BOOL animating, loading; } Ctx;
 
 // Skips text owned by other tappable elements (e.g. a neighbouring tab), which would mislabel this one.
 static void CollectText(UIView *v, UIView *self_, NSMutableArray *out, int depth, BOOL offscreenOK) {
@@ -111,6 +111,10 @@ static void Consider(id obj, UIView *owner, CGRect frame, CGRect vis, NSDictiona
   if (shown && frac < 0.33 && (vis.size.height < 24 || vis.size.width < 24)) shown = NO;
   NSString *kind = Kind(obj);
   // Non-view text/headers (SwiftUI) are page text and context sources, not things to act on.
+  // Swift Charts exposes every bar as an element ("0 to 0,5", value "20"): data points, not controls.
+  if (!isView && !([obj accessibilityTraits] & (UIAccessibilityTraitButton | UIAccessibilityTraitLink)) &&
+      [[obj accessibilityLabel] rangeOfString:@"^-?[0-9.,]+ to -?[0-9.,]+$" options:NSRegularExpressionSearch].location != NSNotFound) return;
+  if (!isView && shown && ([[obj accessibilityLabel] isEqualToString:@"In progress"] || [[obj accessibilityLabel] isEqualToString:@"Loading"])) c->loading = YES;
   if (!isView && ([kind isEqualToString:@"text"] || [kind isEqualToString:@"header"])) {
     if (shown && label.length) [c->texts addObject:label];
     if (label.length && myScroll) [c->axTexts addObject:@{@"label": label, @"frame": R(frame), @"in": myScroll[@"ref"]}];
@@ -191,6 +195,8 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
   if (v.isFirstResponder) c->focused = v;
   // Core Animation moves layers while views already report final frames; flag it so callers keep waiting.
   if (v.layer.animationKeys.count && !CGRectIsEmpty(vis)) c->animating = YES;
+  // A visible spinner means content is still arriving (network); settle should keep waiting.
+  if (!CGRectIsEmpty(vis) && [v isKindOfClass:UIActivityIndicatorView.class] && ((UIActivityIndicatorView *)v).isAnimating) c->loading = YES;
 
   // Content drawn by another process (Safari sheets, web sign-in, some system UI) is opaque to us and to axe.
   if ([NSStringFromClass(v.class) isEqualToString:@"_UIRemoteView"] && !CGRectIsEmpty(vis)) {
@@ -279,7 +285,18 @@ static NSData *Screen(void) {
     };
     if (score(e) > score(o)) merged[dup] = e;
   }
-  [c.els setArray:merged];
+  NSMutableArray *kept = [NSMutableArray array];
+  for (NSDictionary *e in merged) {
+    BOOL inside = NO;
+    if ([e[@"kind"] isEqualToString:@"text"]) for (NSDictionary *o in merged) {
+      if (o == e || [o[@"kind"] isEqualToString:@"text"] || ![o[@"label"] isEqualToString:e[@"label"]]) continue;
+      CGRect a = CGRectMake([o[@"frame"][0] doubleValue], [o[@"frame"][1] doubleValue], [o[@"frame"][2] doubleValue], [o[@"frame"][3] doubleValue]);
+      CGRect b = CGRectMake([e[@"frame"][0] doubleValue], [e[@"frame"][1] doubleValue], [e[@"frame"][2] doubleValue], [e[@"frame"][3] doubleValue]);
+      if (CGRectContainsPoint(CGRectInset(a, -2, -2), CGPointMake(CGRectGetMidX(b), CGRectGetMidY(b)))) inside = YES;
+    }
+    if (!inside) [kept addObject:e];
+  }
+  [c.els setArray:kept];
   for (NSMutableDictionary *s in c.scrolls) {
     NSMutableArray *ahead = [NSMutableArray array];
     for (NSDictionary *h in c.hidden) if ([h[@"in"] isEqualToString:s[@"ref"]] && ahead.count < 20)
@@ -296,7 +313,7 @@ static NSData *Screen(void) {
       kb[@"returnKey"] = @[@"default", @"go", @"google", @"join", @"next", @"route", @"search", @"send", @"yahoo", @"done", @"emergencyCall", @"continue"][MIN((NSInteger)[(id<UITextInputTraits>)c.focused returnKeyType], 11)];
   }
   NSDictionary *out = @{@"screen": @[@(sb.size.width), @(sb.size.height)], @"windows": wnames,
-                        @"keyboard": kb, @"active": @(UIApplication.sharedApplication.applicationState == UIApplicationStateActive), @"animating": @(c.animating), @"elements": c.els, @"hidden": c.hidden, @"remote": c.remote, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
+                        @"keyboard": kb, @"active": @(UIApplication.sharedApplication.applicationState == UIApplicationStateActive), @"animating": @(c.animating), @"loading": @(c.loading), @"elements": c.els, @"hidden": c.hidden, @"remote": c.remote, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
   return [NSJSONSerialization dataWithJSONObject:out options:0 error:nil];
 }
 

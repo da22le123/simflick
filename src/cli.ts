@@ -16,6 +16,7 @@ const USAGE = `usage: simflick <command>
   wait                                       wait until the screen stops changing
   run "<goal>" [--max-steps 60]              let the decision model drive until DONE/BLOCKED
       [--shot] [--full-trace]                end-state screenshot; full screen per step in the trace
+      [--never "Follow,Like,Post"]           labels the agent may never tap
 Every action waits for the screen to settle; --screen prints it afterwards.`;
 
 function args() {
@@ -27,7 +28,7 @@ function args() {
     if (!a.startsWith("--")) { pos.push(a); continue; }
     const [k, v] = a.slice(2).split("=", 2);
     const next = argv[i + 1];
-    flags[k] = v ?? (next && !next.startsWith("--") && ["udid", "port", "ms", "amount", "max-steps"].includes(k) ? (i++, next) : true);
+    flags[k] = v ?? (next && !next.startsWith("--") && ["udid", "port", "ms", "amount", "max-steps", "never"].includes(k) ? (i++, next) : true);
   }
   return { pos, flags };
 }
@@ -109,7 +110,8 @@ async function main() {
   } else if (cmd === "run") {
     const goal = rest.join(" ");
     if (!goal) throw new SimflickError('usage: simflick run "<goal>" [--max-steps 60]');
-    const result = await run(s, goal, { maxSteps: Number(flags["max-steps"] ?? 60), fullTrace: !!flags["full-trace"], shot: !!flags.shot });
+    const never = typeof flags.never === "string" ? flags.never.split(",") : undefined;
+    const result = await run(s, goal, { maxSteps: Number(flags["max-steps"] ?? 60), fullTrace: !!flags["full-trace"], shot: !!flags.shot, never });
     process.exit(result === "done" ? 0 : 4);
   }
   if (flags.screen && sc) print(sc);

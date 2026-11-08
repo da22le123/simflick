@@ -9,7 +9,7 @@ import { fileURLToPath } from "node:url";
 export type El = { kind: string; id: string; label: string; context?: string; selected?: boolean; system?: boolean; frame: number[]; tap: number[]; in?: string; value?: string; clipped?: boolean };
 export type Scroll = { ref: string; id: string; frame: number[]; more: string[]; offset: number[]; content: number[]; hiddenItems: number; paging?: boolean; ahead?: { dir: string; what: string }[] };
 export type Hidden = { kind: string; id: string; label: string; context?: string; frame: number[]; in: string; dir: string };
-export type Screen = { screen: number[]; active?: boolean | number; animating: boolean; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; hidden?: Hidden[]; remote?: { frame: number[]; host: string }[]; text: string[]; scrolls: Scroll[]; ms: number };
+export type Screen = { screen: number[]; active?: boolean | number; animating: boolean; loading?: boolean | number; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; hidden?: Hidden[]; remote?: { frame: number[]; host: string }[]; text: string[]; scrolls: Scroll[]; ms: number };
 export type Session = { udid: string; port: number; bundleId: string; token: string };
 
 export class SimflickError extends Error {
@@ -80,13 +80,15 @@ export async function launch(bundleId: string, udid: string, port: number): Prom
 // RN reacts a few frames after a touch: first wait for the screen to differ from `before` (or give up),
 // then until nothing changed for `quietMs` (Reanimated moves views without CA animations, and sheets
 // often pause ~100 ms before sliding). Capped so looping animations can't hang us.
-export async function settled(s: Session, before?: string, capMs = 2500, quietMs = 150): Promise<Screen> {
+export async function settled(s: Session, before?: string, capMs = 5500, quietMs = 150): Promise<Screen> {
   const start = Date.now();
   let cur = await get<Screen>(s, "/screen");
   if (before) while (keyOf(cur) === before && Date.now() - start < 500) { await sleep(30); cur = await get<Screen>(s, "/screen"); }
   let prev = keyOf(cur), since = Date.now();
   while (Date.now() - start < capMs) {
-    if (!cur.animating && Date.now() - since >= quietMs) break;
+    // While a spinner shows, keep waiting (up to 5 s) so the model doesn't judge a half-loaded screen.
+    const loadingWait = cur.loading && Date.now() - start < 5000;
+    if (!cur.animating && !loadingWait && Date.now() - since >= quietMs) break;
     await sleep(35);
     cur = await get<Screen>(s, "/screen");
     const key = keyOf(cur);
