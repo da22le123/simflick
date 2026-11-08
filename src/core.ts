@@ -5,9 +5,10 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type El = { kind: string; id: string; label: string; frame: number[]; tap: number[]; in?: string; value?: string; clipped?: boolean };
-export type Scroll = { ref: string; id: string; frame: number[]; more: string[]; offset: number[]; content: number[]; hiddenItems: number };
-export type Screen = { screen: number[]; animating: boolean; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; text: string[]; scrolls: Scroll[]; ms: number };
+export type El = { kind: string; id: string; label: string; context?: string; selected?: boolean; frame: number[]; tap: number[]; in?: string; value?: string; clipped?: boolean };
+export type Scroll = { ref: string; id: string; frame: number[]; more: string[]; offset: number[]; content: number[]; hiddenItems: number; paging?: boolean; ahead?: { dir: string; what: string }[] };
+export type Hidden = { kind: string; id: string; label: string; context?: string; frame: number[]; in: string; dir: string };
+export type Screen = { screen: number[]; animating: boolean; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; hidden?: Hidden[]; text: string[]; scrolls: Scroll[]; ms: number };
 export type Session = { udid: string; port: number; bundleId: string };
 
 export class SimflickError extends Error {
@@ -82,24 +83,59 @@ export async function launch(bundleId: string, udid: string, port: number): Prom
 }
 
 // RN reacts a few frames after a touch: first wait for the screen to differ from `before` (or give up),
-// then poll until two consecutive reads match with nothing animating. Capped so loops can't hang us.
-export async function settled(s: Session, before?: string, capMs = 2000): Promise<Screen> {
+// then until nothing changed for `quietMs` (Reanimated moves views without CA animations, and sheets
+// often pause ~100 ms before sliding). Capped so looping animations can't hang us.
+export async function settled(s: Session, before?: string, capMs = 2500, quietMs = 150): Promise<Screen> {
   const start = Date.now();
   let cur = await get<Screen>(s, "/screen");
   if (before) while (keyOf(cur) === before && Date.now() - start < 500) { await sleep(30); cur = await get<Screen>(s, "/screen"); }
-  let prev = "";
+  let prev = keyOf(cur), since = Date.now();
   while (Date.now() - start < capMs) {
-    const key = keyOf(cur);
-    if (key === prev && !cur.animating) break;
-    prev = key;
-    await sleep(40);
+    if (!cur.animating && Date.now() - since >= quietMs) break;
+    await sleep(35);
     cur = await get<Screen>(s, "/screen");
+    const key = keyOf(cur);
+    if (key !== prev || cur.animating) { prev = key; since = Date.now(); }
   }
   return cur;
 }
 
 export const describe = (e: El) => `${e.kind} ${JSON.stringify(e.label)}${e.id ? " #" + e.id : ""}`;
-const sameEl = (a: El, b: El) => a.id === b.id && a.label === b.label && a.kind === b.kind;
+type Ident = { id: string; label: string; kind: string; context?: string };
+const sameEl = (a: Ident, b: Ident) => a.id === b.id && a.label === b.label && a.kind === b.kind && (!a.context || !b.context || a.context === b.context);
+
+// Closed loop: swipe toward the item, re-read, repeat until fully visible, then tap. Works for free,
+// paging and snapping scroll views alike because every step re-measures; stops if the offset stops moving.
+export async function revealAndTap(s: Session, want: Ident): Promise<Screen> {
+  let lastOffset = "";
+  for (let i = 0; i < 12; i++) {
+    const sc = await settled(s);
+    const vis = sc.elements.find((e) => sameEl(e, want));
+    const hid = vis ? undefined : sc.hidden?.find((e) => sameEl(e, want));
+    if (vis && !vis.clipped) return tapPoint(s, vis.tap[0], vis.tap[1], keyOf(sc));
+    const area = sc.scrolls.find((a) => a.ref === (vis?.in ?? hid?.in));
+    if (!area) {
+      if (vis) return tapPoint(s, vis.tap[0], vis.tap[1], keyOf(sc));
+      throw new SimflickError(`target ${JSON.stringify(want.label)}${want.id ? " #" + want.id : ""} is not on screen any more`, 2);
+    }
+    const offset = JSON.stringify(area.offset);
+    if (offset === lastOffset) {
+      if (vis) return tapPoint(s, vis.tap[0], vis.tap[1], keyOf(sc));
+      throw new SimflickError(`could not scroll ${JSON.stringify(want.label)} into view`, 2);
+    }
+    lastOffset = offset;
+    const f = (vis ?? hid)!.frame, [x, y, w, h] = area.frame;
+    const dx = f[0] + f[2] / 2 - (x + w / 2), dy = f[1] + f[3] / 2 - (y + h / 2);
+    const horiz = Math.abs(dx) / w > Math.abs(dy) / h;
+    const dist = horiz ? dx : dy, span = horiz ? w : h;
+    // Paging views snap a page per swipe regardless of length; free views move by the drag minus touch slop.
+    const len = area.paging ? span * 0.6 : Math.min(Math.max(Math.abs(dist) + 12, 40), span * 0.7);
+    const d = Math.sign(dist) * len, cx = x + w / 2, cy = y + h / 2;
+    const [x1, y1, x2, y2] = horiz ? [cx + d / 2, cy, cx - d / 2, cy] : [cx, cy + d / 2, cx, cy - d / 2];
+    await get(s, `/swipe?x1=${x1}&y1=${y1}&x2=${x2}&y2=${y2}&ms=300`);
+  }
+  throw new SimflickError(`gave up scrolling to ${JSON.stringify(want.label)}`, 2);
+}
 
 // Re-reads the screen and taps the element where it is NOW; refuses if it is gone.
 export async function tapElement(s: Session, want: El): Promise<Screen> {

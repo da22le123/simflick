@@ -47,7 +47,37 @@ static NSString *NearestId(UIView *v) {
 
 NSData *SRHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q);
 
-typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn; UIView *focused; BOOL animating; } Ctx;
+typedef struct { NSMutableArray *els, *scrolls, *texts; NSArray *windows; NSMutableDictionary *hiddenIn, *ahead; NSMutableArray *hidden; UIView *focused; BOOL animating; } Ctx;
+
+// Skips text owned by other tappable elements (e.g. a neighbouring tab), which would mislabel this one.
+static void CollectText(UIView *v, UIView *self_, NSMutableArray *out, int depth) {
+  if (depth > 10 || out.count > 6 || v.hidden || v.alpha < 0.01 || v.layer.presentationLayer.opacity < 0.01) return;
+  if (v != self_ && v.isAccessibilityElement && ![NSStringFromClass(v.class) containsString:@"Paragraph"]) return;
+  if ([NSStringFromClass(v.class) containsString:@"Paragraph"]) {
+    // Closed sheets park their text off screen; only count text that is on screen.
+    CGRect f = [v convertRect:v.bounds toView:nil];
+    if (v.accessibilityLabel.length && v.window && CGRectIntersectsRect(f, v.window.bounds)) [out addObject:v.accessibilityLabel];
+    return;
+  }
+  for (UIView *sub in v.subviews) CollectText(sub, self_, out, depth + 1);
+}
+
+// Text of the card/row an element belongs to: climb until other text appears, stop before list-wide levels.
+static NSString *ContextFor(UIView *v, NSString *own) {
+  // Nested inside an accessible card (e.g. a "⋯" menu): the card's label is the best context.
+  for (UIView *p = v.superview; p && ![p isKindOfClass:UIScrollView.class]; p = p.superview)
+    if (p.isAccessibilityElement && p.accessibilityLabel.length) return p.accessibilityLabel;
+  UIView *a = v.superview;
+  for (int i = 0; a && i < 5; i++, a = a.superview) {
+    if ([a isKindOfClass:UIScrollView.class] || [a isKindOfClass:UIWindow.class]) break;
+    NSMutableArray *t = [NSMutableArray array];
+    CollectText(a, v, t, 0);
+    if (t.count > 6) break;
+    [t removeObject:own ?: @""];
+    if (t.count) { NSString *j = [t componentsJoinedByString:@" · "]; return j.length > 100 ? [j substringToIndex:100] : j; }
+  }
+  return @"";
+}
 // The keyboard is drawn by another process; the app only learns its frame from these notifications.
 static CGRect gKeyboard;
 
@@ -73,8 +103,8 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
     if (o.x + b.width < cs.width + in.right - 1) [more addObject:@"right"];
     NSString *sid = [NSString stringWithFormat:@"S%lu", (unsigned long)c->scrolls.count];
     [c->scrolls addObject:[@{@"ref": sid, @"id": NearestId(v), @"frame": R(vis), @"more": more,
-                             @"offset": @[@(round(o.x)), @(round(o.y))], @"content": @[@(round(cs.width)), @(round(cs.height))]} mutableCopy]];
-    myScroll = @{@"ref": sid};
+                             @"offset": @[@(round(o.x)), @(round(o.y))], @"content": @[@(round(cs.width)), @(round(cs.height))], @"paging": @(s.isPagingEnabled)} mutableCopy]];
+    myScroll = @{@"ref": sid, @"vis": [NSValue valueWithCGRect:vis]};
   }
   if (v.clipsToBounds || [v isKindOfClass:UIScrollView.class]) clip = vis;
 
@@ -108,18 +138,32 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
       if (!CGRectEqualToRect(CGRectIntegral(vis), CGRectIntegral(frame))) e[@"clipped"] = @YES;
       if (v.accessibilityValue.length) e[@"value"] = v.accessibilityValue;
       if (myScroll) e[@"in"] = myScroll[@"ref"];
+      // Context only where it disambiguates (list/carousel items, nested buttons); tabs and headers get none.
+      BOOL nested = NO;
+      for (UIView *p = v.superview; p && !nested; p = p.superview) nested = p.isAccessibilityElement;
+      NSString *ctx = (myScroll || nested) ? ContextFor(v, v.accessibilityLabel) : @"";
+      if (ctx.length) e[@"context"] = ctx;
+      if (v.accessibilityTraits & UIAccessibilityTraitSelected) e[@"selected"] = @YES;
       [c->els addObject:e];
     } else if (myScroll) {
       c->hiddenIn[myScroll[@"ref"]] = @([c->hiddenIn[myScroll[@"ref"]] intValue] + 1);
+      CGRect sv = [myScroll[@"vis"] CGRectValue];
+      CGFloat dx = (CGRectGetMidX(frame) - CGRectGetMidX(sv)) / MAX(sv.size.width, 1), dy = (CGRectGetMidY(frame) - CGRectGetMidY(sv)) / MAX(sv.size.height, 1);
+      NSString *dir = fabs(dx) > fabs(dy) ? (dx > 0 ? @"right" : @"left") : (dy > 0 ? @"down" : @"up");
+      NSMutableArray *list = c->ahead[myScroll[@"ref"]] ?: (c->ahead[myScroll[@"ref"]] = [NSMutableArray array]);
+      NSString *what = [@[v.accessibilityLabel ?: @"", ContextFor(v, v.accessibilityLabel)] componentsJoinedByString:@" — "];
+      if (list.count < 20) [list addObject:@{@"dir": dir, @"what": what}];
+      if (c->hidden.count < 200) [c->hidden addObject:@{@"kind": Kind(v), @"id": NearestId(v), @"label": v.accessibilityLabel ?: @"",
+        @"context": ContextFor(v, v.accessibilityLabel), @"frame": R(frame), @"in": myScroll[@"ref"], @"dir": dir}];
     }
-    if (v.isAccessibilityElement) return;  // children are merged into this element's label
+    // Keep descending: an accessible card can contain its own buttons (e.g. a "⋯" menu) that iOS would merge away.
   }
   for (UIView *sub in v.subviews) Walk(sub, clip, myScroll, c);
 }
 
 static NSData *Screen(void) {
   CFTimeInterval t0 = CACurrentMediaTime();
-  Ctx c = {[NSMutableArray array], [NSMutableArray array], [NSMutableArray array], Windows(), [NSMutableDictionary dictionary]};
+  Ctx c = {[NSMutableArray array], [NSMutableArray array], [NSMutableArray array], Windows(), [NSMutableDictionary dictionary], [NSMutableDictionary dictionary], [NSMutableArray array]};
   NSMutableArray *wnames = [NSMutableArray array];
   for (UIWindow *w in c.windows) {
     [wnames addObject:NSStringFromClass(w.class)];
@@ -127,7 +171,7 @@ static NSData *Screen(void) {
     if (!CGRectIsEmpty(CGRectIntersection(gKeyboard, clip))) clip.size.height = MAX(0, CGRectGetMinY(gKeyboard) - clip.origin.y);
     Walk(w, clip, nil, &c);
   }
-  for (NSMutableDictionary *s in c.scrolls) s[@"hiddenItems"] = c.hiddenIn[s[@"ref"]] ?: @0;
+  for (NSMutableDictionary *s in c.scrolls) { s[@"hiddenItems"] = c.hiddenIn[s[@"ref"]] ?: @0; s[@"ahead"] = c.ahead[s[@"ref"]] ?: @[]; }
   CGRect sb = UIScreen.mainScreen.bounds;
   NSMutableDictionary *kb = [@{@"open": @(!CGRectIsEmpty(CGRectIntersection(gKeyboard, sb)))} mutableCopy];
   if ([kb[@"open"] boolValue]) kb[@"frame"] = R(CGRectIntersection(gKeyboard, sb));
@@ -137,7 +181,7 @@ static NSData *Screen(void) {
       kb[@"returnKey"] = @[@"default", @"go", @"google", @"join", @"next", @"route", @"search", @"send", @"yahoo", @"done", @"emergencyCall", @"continue"][MIN((NSInteger)[(id<UITextInputTraits>)c.focused returnKeyType], 11)];
   }
   NSDictionary *out = @{@"screen": @[@(sb.size.width), @(sb.size.height)], @"windows": wnames,
-                        @"keyboard": kb, @"animating": @(c.animating), @"elements": c.els, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
+                        @"keyboard": kb, @"animating": @(c.animating), @"elements": c.els, @"hidden": c.hidden, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
   return [NSJSONSerialization dataWithJSONObject:out options:0 error:nil];
 }
 

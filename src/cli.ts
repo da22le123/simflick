@@ -38,9 +38,14 @@ function print(sc: Screen) {
     if (e.in) bits.push(`in ${e.in}`);
     if (e.value !== undefined) bits.push(`value=${JSON.stringify(e.value)}`);
     if (e.clipped) bits.push("(partly visible)");
+    if (e.selected) bits.push("(selected)");
+    if (e.context) bits.push(`— ${e.context}`);
     console.log(bits.filter(Boolean).join(" "));
   });
-  for (const r of sc.scrolls) console.log(`${r.ref} scroll ${r.id ? "#" + r.id : ""} more: ${r.more.join("/") || "none"}, ${r.hiddenItems} items out of view`);
+  for (const r of sc.scrolls) {
+    console.log(`${r.ref} scroll ${r.id ? "#" + r.id : ""} more: ${r.more.join("/") || "none"}, ${r.hiddenItems} items out of view`);
+    for (const x of (r.ahead ?? []).slice(0, 6)) console.log(`   ${x.dir}: ${x.what}`);
+  }
   if (sc.text.length) console.log(`text: ${sc.text.join(" | ")}`);
 }
 
