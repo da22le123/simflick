@@ -31,7 +31,7 @@ If a required value is missing, return {"text": null}. Otherwise return {"text":
 type Step = { step: number; action: string; kind: string; text?: string; page_changed?: boolean; decide_ms: number; act_ms: number; p: number };
 type Control = { kind: "scroll" | "wait"; label: string; ref?: string; dir?: string };
 
-const elLabel = (e: El | Hidden) => ("system" in e && e.system ? "[iOS system alert] " : "") + [e.label || e.id.replace(/[-_]+/g, " ") || e.kind, e.context].filter(Boolean).join(" — ") + ("selected" in e && e.selected ? " (selected)" : "");
+const elLabel = (e: El | Hidden) => ("system" in e && e.system ? "[iOS system alert] " : "") + (e.kind === "row" ? "Open item (tap the row itself): " : "") + [e.label || e.id.replace(/[-_]+/g, " ") || e.kind, e.context].filter(Boolean).join(" — ") + ("selected" in e && e.selected ? " (selected)" : "");
 
 // Labels the agent must never tap (e.g. Follow, Like, Post): such elements are left out of the choices.
 let neverLabels: RegExp | null = null;
