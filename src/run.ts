@@ -1,4 +1,7 @@
 // Goal-driven loop, ported from jev-ultrafast: TypeSafe picks operation + target, a small LLM writes text.
+import { mkdirSync, writeFileSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 import { El, Hidden, Screen, Session, SimflickError, describe, keyOf, revealAndTap, scrollArea, settled, sleep, tapElement, typeText } from "./core.js";
 
 const NEXT_ACTION = `Advance the user's entire goal from the CURRENT app screen using one operation.
@@ -144,16 +147,26 @@ async function fieldText(goal: string, field: El, sc: Screen, history: Step[]): 
   throw new SimflickError("text helper returned no valid field value; nothing typed");
 }
 
+// Trace = what was actually on screen after each step; checks read this, not the model's DONE.
+type TraceEntry = { step: number; operation: string; action: string; text: string[]; ids: string[] };
+const snap = (sc: Screen) => ({ text: sc.text, ids: sc.elements.map((e) => e.id).filter(Boolean) });
+
 export async function run(s: Session, goal: string, maxSteps = 60): Promise<"done" | "blocked"> {
   const history: Step[] = [];
+  const trace: TraceEntry[] = [];
   const t0 = performance.now();
   let sc = await settled(s);
+  trace.push({ step: 0, operation: "START", action: "", ...snap(sc) });
+  const dir = join(homedir(), ".simflick", "runs");
+  const file = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
+  const flush = (result: string) => { mkdirSync(dir, { recursive: true }); writeFileSync(file, JSON.stringify({ goal, result, trace }, null, 1)); console.log(`trace: ${file}`); };
   for (let n = 1; n <= maxSteps; n++) {
     const d = await choose(s, sc, goal, history);
     const label = d.target ? `${describe(d.target as El)}${"dir" in d.target ? ` (was out of view, ${d.target.dir})` : ""}${d.target.context ? ` — ${d.target.context}` : ""}` : (d.control?.label ?? d.operation).split(";")[0];
     if (d.operation === "DONE" || d.operation === "BLOCKED") {
       console.log(`${String(n).padStart(2)} ${d.operation}  (decide ${d.decide_ms} ms, p=${d.p.toFixed(2)}, ${d.model})`);
       console.log(`${d.operation.toLowerCase()} after ${history.length} actions in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
+      flush(d.operation.toLowerCase());
       return d.operation === "DONE" ? "done" : "blocked";
     }
     const before = keyOf(sc);
@@ -174,13 +187,16 @@ export async function run(s: Session, goal: string, maxSteps = 60): Promise<"don
     }
     const step: Step = { step: n, action: label, kind: d.operation, text, page_changed: keyOf(sc) !== before, decide_ms: d.decide_ms, act_ms: Math.round(performance.now() - a0), p: d.p };
     history.push(step);
+    trace.push({ step: n, operation: d.operation, action: label, ...snap(sc) });
     console.log(`${String(n).padStart(2)} ${d.operation.padEnd(9)} ${label}${text ? ` <- ${JSON.stringify(text)}` : ""}  (decide ${step.decide_ms} ms, act ${step.act_ms} ms, p=${d.p.toFixed(2)}${step.page_changed ? "" : ", NO CHANGE"})`);
     const last3 = history.slice(-3);
     if (last3.length === 3 && last3.every((h) => !h.page_changed && h.kind !== "WAIT")) {
       console.log("blocked: 3 actions in a row changed nothing");
+      flush("blocked");
       return "blocked";
     }
   }
   console.log(`blocked: reached ${maxSteps} steps`);
+  flush("blocked");
   return "blocked";
 }
