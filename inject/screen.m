@@ -403,13 +403,18 @@ static NSData *Screen(void) {
         if (words.count < 3 && w.length > 2 && [w rangeOfString:@"[A-Za-z\\p{L}]{2}" options:NSRegularExpressionSearch].location != NSNotFound && ![words containsObject:w]) [words addObject:w];
     }
     if (inside.count < 2) { [rebuilt addObject:e]; continue; }
+    // Aim just below the top inner element (a post's header): that's where its text is. The middle tends to be
+    // media, which opens a viewer or nothing.
+    CGRect top = CGRectNull;
+    for (NSValue *ev in inside) if (CGRectIsNull(top) || CGRectGetMinY([ev CGRectValue]) < CGRectGetMinY(top)) top = [ev CGRectValue];
+    CGPoint aim = CGPointMake(CGRectGetMidX(top), CGRectGetMaxY(top) + 18);
     CGPoint best = CGPointZero; double bestD = 1e9;
-    for (int gx = 1; gx < 8; gx++) for (int gy = 1; gy < 8; gy++) {
-      CGPoint p = CGPointMake(CGRectGetMinX(cf) + cf.size.width * gx / 8, CGRectGetMinY(cf) + cf.size.height * gy / 8);
+    for (int gx = 1; gx < 10; gx++) for (int gy = 1; gy < 16; gy++) {
+      CGPoint p = CGPointMake(CGRectGetMinX(cf) + cf.size.width * gx / 10, CGRectGetMinY(cf) + cf.size.height * gy / 16);
       BOOL onEl = NO;
       for (NSValue *ev in inside) if (CGRectContainsPoint(CGRectInset([ev CGRectValue], -4, -4), p)) { onEl = YES; break; }
       if (onEl || !HitAt(p, c.windows)) continue;
-      double d = hypot(p.x - CGRectGetMidX(cf), p.y - CGRectGetMidY(cf));
+      double d = hypot(p.x - aim.x, p.y - aim.y);
       if (d < bestD) { bestD = d; best = p; }
     }
     if (bestD >= 1e9) { [rebuilt addObject:e]; continue; }
