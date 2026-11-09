@@ -162,9 +162,35 @@ BOOL SFActivateAt(CGPoint p, NSString **label) {
 
 static double Q(NSDictionary *q, NSString *k, double dflt) { return q[k] ? [q[k] doubleValue] : dflt; }
 
+// Text straight into the focused field through UIKit's text input API: what the keyboard itself calls, so the app's
+// change handlers fire, but independent of the keyboard layout (axe types key positions: on a Russian layout
+// "SF" became "ЫА"). Main thread.
+static NSDictionary *TypeIntoFocused(NSString *text, BOOL replace) {
+  SFSnapshot *s = SFCollect(NO);
+  UIView *f = s.focused;
+  if (![f conformsToProtocol:@protocol(UITextInput)]) return @{@"ok": @NO, @"error": @"no focused text field"};
+  id<UITextInput> input = (id<UITextInput>)f;
+  if (replace) {
+    UITextRange *all = [input textRangeFromPosition:input.beginningOfDocument toPosition:input.endOfDocument];
+    if (all && !all.isEmpty) { input.selectedTextRange = all; [input deleteBackward]; }
+  }
+  [input insertText:text];
+  UITextRange *all = [input textRangeFromPosition:input.beginningOfDocument toPosition:input.endOfDocument];
+  return @{@"ok": @YES, @"value": [input textInRange:all] ?: @""};
+}
+
 // Called from the server thread; blocks until the gesture finished on the main thread.
 NSData *SFHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q) {
   CFTimeInterval t0 = CACurrentMediaTime();
+  if ([path isEqualToString:@"/type"]) {
+    __block NSDictionary *r = nil;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    NSString *text = q[@"text"] ?: @"";
+    BOOL replace = q[@"replace"] != nil;
+    dispatch_async(dispatch_get_main_queue(), ^{ r = TypeIntoFocused(text, replace); dispatch_semaphore_signal(done); });
+    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC))) r = @{@"ok": @NO, @"error": @"main thread busy"};
+    return [NSJSONSerialization dataWithJSONObject:r options:0 error:nil];
+  }
   if ([path isEqualToString:@"/tap"]) {
     CGPoint p = CGPointMake(Q(q, @"x", 0), Q(q, @"y", 0));
     __block NSString *activated = nil;

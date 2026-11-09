@@ -308,7 +308,9 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
       } else if (d.operation === "CLICK") sc = await revealAndTap(s, d.target!);
       else if (d.operation === "TYPE_TEXT") {
         if (sc.keyboard.focused === undefined || sc.keyboard.focused !== d.target!.id) sc = await tapElement(s, d.target as El);
-        text = await fieldText(goal, d.target as El, sc, history);
+        // A plan step that quotes its value ("type 'Hola' into card 1 back") says exactly what to type.
+        const stepValue = plan[at]?.text.match(/["“']([^"”']+)["”']/)?.[1];
+        text = stepValue ?? await fieldText(goal, d.target as El, sc, history);
         sc = (await typeText(s, text, true)).screen;
       } else if (d.operation === "SWIPE_LEFT" || d.operation === "SWIPE_RIGHT") {
         // A quick flick across the card, released without a pause, as a person dismisses it.

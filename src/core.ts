@@ -270,8 +270,12 @@ export async function typeText(s: Session, text: string, replace = false): Promi
   if (now.keyboard.focused === undefined) throw new SimflickError("no text field is focused; tap one first", 2);
   const focusedInput = (sc: Screen) => sc.elements.find((e) => e.kind === "input" && e.id === sc.keyboard.focused);
   const current = focusedInput(now)?.value ?? "";
-  if (replace && current) execFileSync("axe", ["key-combo", "--modifiers", "227", "--key", "4", "--udid", s.udid], { stdio: "ignore" });
-  execFileSync("axe", ["type", text, "--udid", s.udid], { stdio: "ignore" });
+  // In the app first (layout-independent, instant); axe types key positions, so it's only the fallback.
+  const typed = await get<{ ok: boolean }>(s, `/type?text=${encodeURIComponent(text)}${replace ? "&replace=1" : ""}`).catch(() => ({ ok: false }));
+  if (!typed.ok) {
+    if (replace && current) execFileSync("axe", ["key-combo", "--modifiers", "227", "--key", "4", "--udid", s.udid], { stdio: "ignore" });
+    execFileSync("axe", ["type", text, "--udid", s.udid], { stdio: "ignore" });
+  }
   const sc = await settled(s, keyOf(now));
   save(s, sc);
   const value = focusedInput(sc)?.value ?? "";
