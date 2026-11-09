@@ -35,6 +35,9 @@ static const CGFloat kSFSamePlaceSize = 12;         // …and sizes this close =
 // A few controls under something (toast, banner) are reported with their state; many = a sheet over a page.
 static const NSUInteger kSFMaxCoveredReported = 6;
 
+// Lazy lists: screens to read ahead in each direction when the client asks (/screen?scan=1)
+static const int kSFScanScreens = 5;
+
 // Output caps
 static const NSUInteger kSFMaxHidden = 100;           // per scroll area
 static const NSUInteger kSFMaxHiddenCollected = 2000; // safety cap while walking huge lists

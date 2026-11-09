@@ -43,8 +43,8 @@ static NSData *OnMain(NSData *(^work)(void)) {
 static NSData *Route(SFRequest r) {
   NSData *body = nil;
   if ([r.path isEqualToString:@"/screen"]) {
-    BOOL debug = r.query[@"debug"] != nil;
-    body = OnMain(^{ return SFScreenJSON(debug); });
+    BOOL debug = r.query[@"debug"] != nil, scan = r.query[@"scan"] != nil;
+    body = OnMain(^{ return SFScreenJSON(debug, scan); });
   } else if ([r.path isEqualToString:@"/debug"]) {
     body = OnMain(^{ return SFViewDump(); });
   } else {

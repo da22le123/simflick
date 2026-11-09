@@ -149,7 +149,7 @@ function withSystemAlert(s: Session, sc: Screen): Screen {
 }
 
 export const describe = (e: El) => `${e.kind} ${JSON.stringify(e.label)}${e.id ? " #" + e.id : ""}`;
-type Ident = { id: string; label: string; kind: string; context?: string };
+type Ident = { id: string; label: string; kind: string; context?: string; in?: string; dir?: string };
 const sameEl = (a: Ident, b: Ident) => a.id === b.id && a.label === b.label && a.kind === b.kind && (!a.context || !b.context || a.context === b.context);
 
 // Closed loop: swipe toward the item, re-read, repeat until fully visible, then tap. Works for free,
@@ -161,13 +161,14 @@ export async function revealAndTap(s: Session, want: Ident): Promise<Screen> {
     const vis = sc.elements.find((e) => sameEl(e, want));
     const hid = vis ? undefined : sc.hidden?.find((e) => sameEl(e, want));
     if (vis && (!vis.clipped || vis.system)) return tapPoint(s, vis.tap[0], vis.tap[1], keyOf(sc), !!vis.system);
-    const area = sc.scrolls.find((a) => a.ref === (vis?.in ?? hid?.in));
+    // A target only a list scan found isn't built yet: keep scrolling the way the scan said it lies.
+    const area = sc.scrolls.find((a) => a.ref === (vis?.in ?? hid?.in ?? want.in));
     // Rows taller than the screen are never fully visible; a tap point well inside the area is enough.
     if (vis && area) {
       const [ax, ay, aw, ah] = area.frame, [tx, ty] = vis.tap;
       if (tx > ax + aw * 0.1 && tx < ax + aw * 0.9 && ty > ay + ah * 0.15 && ty < ay + ah * 0.85) return tapPoint(s, tx, ty, keyOf(sc));
     }
-    if (!area) {
+    if (!area || (!vis && !hid && !want.dir)) {
       if (vis) return tapPoint(s, vis.tap[0], vis.tap[1], keyOf(sc));
       throw new SimflickError(`target ${JSON.stringify(want.label)}${want.id ? " #" + want.id : ""} is not on screen any more`, 2);
     }
@@ -177,8 +178,10 @@ export async function revealAndTap(s: Session, want: Ident): Promise<Screen> {
       throw new SimflickError(`could not scroll ${JSON.stringify(want.label)} into view`, 2);
     }
     lastOffset = offset;
-    const f = (vis ?? hid)!.frame, [x, y, w, h] = area.frame;
-    const [px, py] = vis ? vis.tap : [f[0] + f[2] / 2, f[1] + f[3] / 2];
+    const [x, y, w, h] = area.frame;
+    const ahead = { down: [x + w / 2, y + h * 2], up: [x + w / 2, y - h], right: [x + w * 2, y + h / 2], left: [x - w, y + h / 2] }[want.dir ?? "down"]!;
+    const f = (vis ?? hid)?.frame;
+    const [px, py] = vis ? vis.tap : f ? [f[0] + f[2] / 2, f[1] + f[3] / 2] : ahead;
     const dx = px - (x + w / 2), dy = py - (y + h / 2);
     const horiz = Math.abs(dx) / w > Math.abs(dy) / h;
     const dist = horiz ? dx : dy, span = horiz ? w : h;

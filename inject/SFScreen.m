@@ -64,10 +64,11 @@ static NSDictionary *KeyboardJSON(UIView *focused) {
   return kb;
 }
 
-NSData *SFScreenJSON(BOOL debug) {
+NSData *SFScreenJSON(BOOL debug, BOOL scan) {
   CFTimeInterval t0 = CACurrentMediaTime();
   SFSnapshot *s = SFCollect(debug);
   if (debug) return [NSJSONSerialization dataWithJSONObject:s.debug options:0 error:nil];
+  if (scan) SFScanLists(s);
   SFRefine(s);
   NSString *title = nil;
   for (UIWindow *w in s.windows.reverseObjectEnumerator) if ((title = NavTitle(w))) break;

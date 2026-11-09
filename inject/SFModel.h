@@ -96,7 +96,8 @@ NSArray *SFAXChildren(id obj);
 // Pipeline.
 SFSnapshot *SFCollect(BOOL debug);
 void SFRefine(SFSnapshot *s);
-NSData *SFScreenJSON(BOOL debug);
+void SFScanLists(SFSnapshot *s);
+NSData *SFScreenJSON(BOOL debug, BOOL scan);
 NSData *SFViewDump(void);
 NSData *SFHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *query);
 BOOL SFActivateAt(CGPoint p, NSString **label);
