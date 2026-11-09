@@ -281,6 +281,8 @@ export async function typeText(s: Session, text: string, replace = false): Promi
   const value = focusedInput(sc)?.value ?? "";
   // Controlled RN inputs can drop keystrokes while JS is busy; report what actually landed.
   // iOS may autocapitalise the first letter: a case-only difference still means the text landed.
-  if (!value.toLowerCase().endsWith(text.toLowerCase())) throw new SimflickError(`typed ${JSON.stringify(text)} but the field now holds ${JSON.stringify(value)}`, 3);
+  // Secure fields (passwords) read back as bullets: the right number of them means it landed.
+  const masked = /^[•●*]+$/.test(value) && value.length >= text.length;
+  if (!masked && !value.toLowerCase().endsWith(text.toLowerCase())) throw new SimflickError(`typed ${JSON.stringify(text)} but the field now holds ${JSON.stringify(value)}`, 3);
   return { screen: sc, value };
 }

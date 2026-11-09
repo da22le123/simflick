@@ -5,6 +5,9 @@ import {
   save, scrollArea, settled, swipe, tapElement, tapPoint, typeText,
 } from "./core.js";
 import { run } from "./run.js";
+import { existsSync, readFileSync, statSync } from "node:fs";
+import { homedir } from "node:os";
+import { join } from "node:path";
 
 const USAGE = `usage: simflick <command>
   launch <bundle-id> [--udid U] [--port P] [--lang de]   inject + launch, wait until it answers
@@ -55,7 +58,20 @@ function print(sc: Screen) {
   if (sc.text.length) console.log(`text: ${sc.text.join(" | ")}`);
 }
 
+// Keys live in ~/.config/simflick/env (KEY=VALUE, mode 600) so any shell, including an agent's, finds them.
+// The environment wins; nothing is read from the working directory.
+function loadConfig() {
+  const file = join(homedir(), ".config", "simflick", "env");
+  if (!existsSync(file)) return;
+  if ((statSync(file).mode & 0o077) !== 0) console.error(`simflick: ${file} is readable by others; run chmod 600 on it`);
+  for (const line of readFileSync(file, "utf8").split("\n")) {
+    const m = line.match(/^\s*([A-Z0-9_]+)\s*=\s*(.*?)\s*$/);
+    if (m && process.env[m[1]] === undefined) process.env[m[1]] = m[2].replace(/^["']|["']$/g, "");
+  }
+}
+
 async function main() {
+  loadConfig();
   const { pos, flags } = args();
   const [cmd, ...rest] = pos;
   const udid = typeof flags.udid === "string" ? flags.udid : undefined;

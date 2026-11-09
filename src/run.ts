@@ -244,9 +244,9 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
   const dir = join(homedir(), ".simflick", "runs");
   const file = join(dir, `${new Date().toISOString().replace(/[:.]/g, "-")}.json`);
   // Written after every step too, so an interrupted run (Ctrl-C) still leaves its log.
-  const progress = () => { mkdirSync(dir, { recursive: true }); writeFileSync(file, JSON.stringify({ goal, result: "running", startedAt, trace }, null, 1)); };
+  const progress = () => { mkdirSync(dir, { recursive: true, mode: 0o700 }); writeFileSync(file, JSON.stringify({ goal, result: "running", startedAt, trace }, null, 1)); };
   const flush = async (result: string) => {
-    mkdirSync(dir, { recursive: true });
+    mkdirSync(dir, { recursive: true, mode: 0o700 });
     const final = await settled(s);
     trace[trace.length - 1].screen = final;
     let shot: string | undefined;
