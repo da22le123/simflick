@@ -58,6 +58,23 @@ BOOL SFIsStatus(id obj) {
   return (t & UIAccessibilityTraitUpdatesFrequently) && !(t & (UIAccessibilityTraitButton | UIAccessibilityTraitLink | UIAccessibilityTraitAdjustable));
 }
 
+// What a view itself responds to, from the gesture recognizers attached to it (UIKit, react-native-gesture-handler).
+// Not accessibility: this is how the touch is actually handled. UIKit's own internals (scroll views, bars, RN's root
+// touch handler) are skipped: they say nothing about this view being a control.
+NSArray<NSString *> *SFGesturesOf(UIView *v) {
+  if ([v isKindOfClass:UIScrollView.class] || [v isKindOfClass:UIControl.class] || [NSStringFromClass(v.class) hasPrefix:@"_"]) return nil;
+  NSMutableOrderedSet *kinds = [NSMutableOrderedSet orderedSet];
+  for (UIGestureRecognizer *g in v.gestureRecognizers) {
+    NSString *cls = NSStringFromClass(g.class);
+    if (!g.enabled || [cls hasPrefix:@"_"] || [cls containsString:@"TouchHandler"] || [cls containsString:@"Hover"]) continue;
+    if ([g isKindOfClass:UITapGestureRecognizer.class] || [cls containsString:@"Tap"]) [kinds addObject:@"tap"];
+    else if ([g isKindOfClass:UIPanGestureRecognizer.class] || [g isKindOfClass:UISwipeGestureRecognizer.class] ||
+             [cls containsString:@"Pan"] || [cls containsString:@"Swipe"] || [cls containsString:@"Fling"]) [kinds addObject:@"swipe"];
+    else if ([g isKindOfClass:UILongPressGestureRecognizer.class] || [cls containsString:@"LongPress"]) [kinds addObject:@"long press"];
+  }
+  return kinds.count ? kinds.array : nil;
+}
+
 // Content still arriving: a spinning UIActivityIndicatorView or a web view that is loading.
 BOOL SFIsLoadingIndicator(UIView *v) {
   if ([v isKindOfClass:UIActivityIndicatorView.class]) return ((UIActivityIndicatorView *)v).isAnimating;

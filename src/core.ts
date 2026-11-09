@@ -6,10 +6,10 @@ import { homedir } from "node:os";
 import { dirname, join } from "node:path";
 import { fileURLToPath } from "node:url";
 
-export type El = { kind: string; id: string; label: string; context?: string; selected?: boolean; system?: boolean; frame: number[]; tap: number[]; in?: string; value?: string; clipped?: boolean };
+export type El = { kind: string; id: string; label: string; context?: string; selected?: boolean; system?: boolean; frame: number[]; tap: number[]; in?: string; value?: string; clipped?: boolean; gestures?: string[] };
 export type Scroll = { ref: string; id: string; frame: number[]; more: string[]; offset: number[]; content: number[]; hiddenItems: number; paging?: boolean; ahead?: { dir: string; what: string }[] };
 export type Hidden = { kind: string; id: string; label: string; context?: string; frame: number[]; in: string; dir: string };
-export type Screen = { title?: string; screen: number[]; active?: boolean | number; animating: boolean; loading?: boolean | number; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; textItems?: { label: string; tap: number[]; partOf?: string }[]; hidden?: Hidden[]; remote?: { frame: number[]; host: string }[]; text: string[]; scrolls: Scroll[]; ms: number };
+export type Screen = { title?: string; layout?: string; screen: number[]; active?: boolean | number; animating: boolean; loading?: boolean | number; keyboard: { open: boolean; frame?: number[]; focused?: string; returnKey?: string }; elements: El[]; textItems?: { label: string; tap: number[]; partOf?: string }[]; hidden?: Hidden[]; remote?: { frame: number[]; host: string }[]; text: string[]; scrolls: Scroll[]; ms: number };
 export type Session = { udid: string; port: number; bundleId: string; token: string };
 
 export class SimflickError extends Error {
@@ -108,16 +108,20 @@ export async function settled(s: Session, before?: string, capMs = 5500, quietMs
   const start = Date.now();
   let cur = await get<Screen>(s, "/screen");
   if (before) while (keyOf(cur) === before && Date.now() - start < 500) { await sleep(30); cur = await get<Screen>(s, "/screen"); }
-  let prev = keyOf(cur), since = Date.now();
+  let prev = keyOf(cur), since = Date.now(), layout = cur.layout, moved = Date.now();
   while (Date.now() - start < capMs) {
+    // Something still moving (a card flying out) without changing any element: wait, but at most 1.5 s past the
+    // last real change, so endlessly animating screens don't stall every action.
+    const moving = Date.now() - moved < quietMs && Date.now() - since < 1500;
     // While a spinner shows, keep waiting so the model doesn't judge a half-loaded screen; but a spinner that
     // never stops (background sync) shouldn't stall every action: give up once nothing else changed for 1.5 s.
     const loadingWait = (cur.loading || looksLikeSkeleton(cur)) && Date.now() - start < 5000 && Date.now() - since < 1500;
-    if (!cur.animating && !loadingWait && Date.now() - since >= quietMs) break;
+    if (!cur.animating && !loadingWait && !moving && Date.now() - since >= quietMs) break;
     await sleep(35);
     cur = await get<Screen>(s, "/screen");
     const key = keyOf(cur);
     if (key !== prev || cur.animating) { prev = key; since = Date.now(); }
+    if (cur.layout !== layout) { layout = cur.layout; moved = Date.now(); }
   }
   // The library sends active as 0/1; only an explicit inactive triggers the (slower) system-alert read.
   return cur.active !== undefined && !cur.active ? withSystemAlert(s, cur) : cur;

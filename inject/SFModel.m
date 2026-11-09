@@ -10,6 +10,7 @@ NSString *SFRoleName(SFRole role) {
     case SFRoleHeader: return @"header";
     case SFRoleText: return @"text";
     case SFRoleRow: return @"row";
+    case SFRoleGesture: return @"gesture";
     case SFRoleElement: return @"element";
   }
   return @"element";
@@ -32,6 +33,7 @@ NSString *SFRoleName(SFRole role) {
   if (_scrollRef) e[@"in"] = _scrollRef;
   if (_context.length) e[@"context"] = _context;
   if (_selected) e[@"selected"] = @YES;
+  if (_gestures.count) e[@"gestures"] = _gestures;
   return e;
 }
 - (NSDictionary *)hiddenJSON {

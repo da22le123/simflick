@@ -171,6 +171,13 @@ static void Walk(SFSnapshot *s, UIView *v, CGRect clip, SFScrollArea *scroll) {
   if (v.isFirstResponder) s.focused = v;
   // Core Animation moves layers while views already report final frames; flag it so callers keep waiting.
   if (onScreen && IsTransitioning(v.layer)) s.animating = YES;
+  // Reanimated and friends move views by setting their layers each frame, no CAAnimation: hash where things are.
+  if (onScreen) {
+    CATransform3D t = (v.layer.presentationLayer ?: v.layer).transform;
+    uint64_t h = (uint64_t)(int64_t)lround(frame.origin.x * 2) * 1000003u ^ (uint64_t)(int64_t)lround(frame.origin.y * 2) * 7919u ^
+                 (uint64_t)(int64_t)lround((t.m11 + t.m41 + t.m42) * 100);
+    s.layoutHash = s.layoutHash * 31 + h;
+  }
   if (onScreen && SFIsLoadingIndicator(v)) s.loading = YES;
   static Class web;
   if (!web) web = NSClassFromString(@"WKWebView");
@@ -211,6 +218,22 @@ static void Walk(SFSnapshot *s, UIView *v, CGRect clip, SFScrollArea *scroll) {
       [s.texts addObject:t];
     }
   } else if (!isWeb && (v.isAccessibilityElement || [v conformsToProtocol:@protocol(UITextInput)])) Consider(s, v, v, frame, vis, mine, nil);
+  // A view that handles gestures itself (a flip/swipe card) is a target even when accessibility doesn't say so.
+  NSArray *gestures = onScreen ? SFGesturesOf(v) : nil;
+  if (gestures) {
+    SFNode *own = s.nodes.lastObject.source == v ? s.nodes.lastObject : nil;
+    if (own) own.gestures = gestures;
+    else {
+      SFProbe probe = Probe(v, v, vis, s.windows);
+      if (probe.reachable && !IsSliver(frame, vis)) {
+        SFNode *n = [SFNode new];
+        n.role = SFRoleGesture; n.label = v.accessibilityLabel.length ? v.accessibilityLabel : SFTextInside(v);
+        n.identifier = SFNearestId(v); n.frame = SFRound(frame); n.tap = SFMid(vis); n.scrollRef = mine.ref;
+        n.clipped = !CGRectEqualToRect(CGRectIntegral(vis), CGRectIntegral(frame)); n.source = v; n.gestures = gestures;
+        [s.nodes addObject:n];
+      }
+    }
+  }
   // SwiftUI (and some UIKit containers) describe content as accessibility elements that are not views.
   // RN views are fully covered by the view walk (text included); skipping their AX children keeps reads fast.
   NSArray *axKids = [NSStringFromClass(v.class) hasPrefix:@"RCT"] ? @[] : SFAXChildren(v);

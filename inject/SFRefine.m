@@ -76,6 +76,18 @@ static void DropRedundantContext(SFSnapshot *s) {
   for (SFNode *n in all) if (n.context.length && [n.label containsString:n.context]) n.context = nil;
 }
 
+// A gesture view that holds several controls is a pager or swipeable screen (RN tabs), not a card: drop it.
+static void DropGestureContainers(SFSnapshot *s) {
+  NSMutableArray *drop = [NSMutableArray array];
+  for (SFNode *g in s.nodes) {
+    if (g.role != SFRoleGesture) continue;
+    int inside = 0;
+    for (SFNode *o in s.nodes) if (o != g && CGRectContainsPoint(g.frame, SFMid(o.frame))) inside++;
+    if (inside >= 2) [drop addObject:g];
+  }
+  [s.nodes removeObjectsInArray:drop];
+}
+
 // --- "Open item" rows: something that opens when tapped (a post, a list cell) but isn't one clean element. ---
 
 // Label from what's inside: visible text first, then each inner element's label and context, at most 3 phrases.
@@ -242,6 +254,7 @@ static void CoveredNote(SFSnapshot *s) {
 void SFRefine(SFSnapshot *s) {
   NearestTextContext(s);          // first: hidden nodes need context before ScrollPreviews
   MergeSamePlace(s);              // before rows: duplicates would count as two inner elements
+  DropGestureContainers(s);       // before rows: a pager would become a giant row
   RowsFromCells(s);               // adds rows; its duplicate check sees rows added earlier in the loop
   ContainersToRows(s);            // sees cell rows as inner elements
   TextItems(s);                   // after both row passes: text under a non-row element is covered

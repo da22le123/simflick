@@ -4,6 +4,7 @@
 
 typedef NS_ENUM(NSInteger, SFRole) {
   SFRoleElement, SFRoleButton, SFRoleLink, SFRoleInput, SFRoleSwitch, SFRoleAdjustable, SFRoleHeader, SFRoleText, SFRoleRow,
+  SFRoleGesture,  // a view that only takes gestures (a flip/swipe card): known from its gesture recognizers
 };
 NSString *SFRoleName(SFRole role);
 
@@ -31,6 +32,7 @@ NSString *SFRoleName(SFRole role);
 @property(nonatomic, copy) NSString *direction; // hidden nodes only
 @property(nonatomic, copy) NSString *coveredBy; // covered nodes only: what lies on top
 @property(nonatomic, weak) id source;            // the view or accessibility element it came from
+@property(nonatomic, copy) NSArray<NSString *> *gestures;  // "tap", "swipe": from the view's own gesture recognizers
 - (NSDictionary *)json;
 - (NSDictionary *)hiddenJSON;
 @end
@@ -71,6 +73,7 @@ NSString *SFRoleName(SFRole role);
 @property(nonatomic, strong) NSMutableArray<SFWebTarget *> *webTargets;   // keeps web nodes' sources alive
 @property(nonatomic, weak) UIView *focused;
 @property(nonatomic) BOOL animating, loading;
+@property(nonatomic) uint64_t layoutHash;  // positions of all visible views: changes while anything moves (Reanimated too)
 @property(nonatomic, strong) NSMutableArray *debug;                       // rejected candidates, only with ?debug=1
 - (SFScrollArea *)scrollWithRef:(NSString *)ref;
 - (NSArray<NSString *> *)pageText;
@@ -102,6 +105,8 @@ BOOL SFHasWords(NSString *s);
 // Context text (SFContext.m).
 NSString *SFContextFor(UIView *v, NSString *own, BOOL offscreenOK);
 NSString *SFSiblingText(NSArray *siblings, id me);
+NSString *SFTextInside(UIView *v);
+NSArray<NSString *> *SFGesturesOf(UIView *v);
 NSArray *SFAXChildren(id obj);
 
 // Pipeline.

@@ -41,6 +41,7 @@ function print(sc: Screen) {
     if (e.value !== undefined) bits.push(`value=${JSON.stringify(e.value)}`);
     if (e.clipped) bits.push("(partly visible)");
     if (e.selected) bits.push("(selected)");
+    if (e.gestures?.length) bits.push(`(${e.gestures.join(", ")})`);
     if (e.system) bits.push("[iOS system alert]");
     if (e.context) bits.push(`— ${e.context}`);
     console.log(bits.filter(Boolean).join(" "));

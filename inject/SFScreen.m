@@ -80,7 +80,7 @@ NSData *SFScreenJSON(BOOL debug, BOOL scan) {
   CGSize screen = SFAppBounds().size;
   NSDictionary *out = @{@"title": title ?: @"", @"screen": @[@(screen.width), @(screen.height)], @"windows": windows,
     @"keyboard": KeyboardJSON(s.focused), @"active": @(UIApplication.sharedApplication.applicationState == UIApplicationStateActive),
-    @"animating": @(s.animating), @"loading": @(s.loading), @"elements": nodes, @"textItems": s.textItems, @"hidden": hidden,
+    @"animating": @(s.animating), @"loading": @(s.loading), @"layout": [NSString stringWithFormat:@"%llx", s.layoutHash], @"elements": nodes, @"textItems": s.textItems, @"hidden": hidden,
     @"remote": s.remote, @"text": s.pageText, @"scrolls": scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
   return [NSJSONSerialization dataWithJSONObject:out options:0 error:nil];
 }

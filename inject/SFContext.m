@@ -3,9 +3,13 @@
 #import <objc/message.h>
 
 // Skips text owned by other tappable elements (e.g. a neighbouring tab), which would mislabel this one.
-static void CollectText(UIView *v, UIView *me, NSMutableArray *out, int depth, BOOL offscreenOK) {
+// flipped: an odd number of ancestors are rotated past 90° (a flip card's back face). With its back face hidden,
+// such a view is turned away from the user and shows nothing.
+static void CollectText(UIView *v, UIView *me, NSMutableArray *out, int depth, BOOL offscreenOK, BOOL flipped) {
   CALayer *shown = v.layer.presentationLayer;
   if (depth > kSFContextDepth || out.count > kSFContextMaxTexts || v.hidden || v.alpha < kSFInvisibleAlpha || (shown && shown.opacity < kSFInvisibleAlpha)) return;
+  if ((shown ?: v.layer).transform.m11 < 0) flipped = !flipped;
+  if (flipped && !v.layer.doubleSided) return;
   BOOL text = SFIsTextView(v);
   if (v != me && v.isAccessibilityElement && !text) return;
   if (v != me && text) {
@@ -14,7 +18,15 @@ static void CollectText(UIView *v, UIView *me, NSMutableArray *out, int depth, B
     if (v.accessibilityLabel.length && v.window && (offscreenOK || CGRectIntersectsRect(f, v.window.bounds))) [out addObject:v.accessibilityLabel];
     return;
   }
-  for (UIView *sub in v.subviews) CollectText(sub, me, out, depth + 1, offscreenOK);
+  for (UIView *sub in v.subviews) CollectText(sub, me, out, depth + 1, offscreenOK, flipped);
+}
+
+// The text a view contains (a card's term), for labelling views that have no label of their own.
+NSString *SFTextInside(UIView *v) {
+  NSMutableArray *t = [NSMutableArray array];
+  CollectText(v, v, t, 0, NO, NO);
+  NSString *j = [t componentsJoinedByString:@" · "];
+  return j.length > kSFContextMaxChars ? [j substringToIndex:kSFContextMaxChars] : j;
 }
 
 // Text of the card/row a view belongs to: climb until other text appears, stop before list-wide levels.
@@ -27,7 +39,7 @@ NSString *SFContextFor(UIView *v, NSString *own, BOOL offscreenOK) {
   for (int i = 0; a && i < kSFContextClimb; i++, a = a.superview) {
     if ([a isKindOfClass:UIScrollView.class] || [a isKindOfClass:UIWindow.class]) break;
     NSMutableArray *t = [NSMutableArray array];
-    CollectText(a, v, t, 0, offscreenOK);
+    CollectText(a, v, t, 0, offscreenOK, NO);
     if (t.count > kSFContextMaxTexts) break;
     [t removeObject:own ?: @""];
     if (t.count) { NSString *j = [t componentsJoinedByString:@" · "]; return j.length > kSFContextMaxChars ? [j substringToIndex:kSFContextMaxChars] : j; }
