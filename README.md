@@ -3,6 +3,10 @@
 Fast UI driving for iOS simulator apps, built for AI agents (in the spirit of
 [jev-ultrafast](https://github.com/browser-use/jev-ultrafast), but for the iOS simulator).
 
+<a href="docs/demo.mp4"><img src="docs/demo.gif" alt="Claude Code uses simflick to test the Dex app: create a folder and a deck with two cards, practice it (one known, one unknown), reach the completion screen" width="100%" /></a>
+
+[Watch the MP4](docs/demo.mp4)
+
 A small Objective-C library is injected into the app at launch. It serves, over localhost:
 
 - `GET /screen`: only what is actually on screen (visible, not covered, not clipped), with true
