@@ -32,6 +32,9 @@ static const NSUInteger kSFRowLabelChars = 160;
 static const CGFloat kSFSamePlaceCenter = 6;        // centres this close…
 static const CGFloat kSFSamePlaceSize = 12;         // …and sizes this close = the same control
 
+// A few controls under something (toast, banner) are reported with their state; many = a sheet over a page.
+static const NSUInteger kSFMaxCoveredReported = 6;
+
 // Output caps
 static const NSUInteger kSFMaxHidden = 100;           // per scroll area
 static const NSUInteger kSFMaxHiddenCollected = 2000; // safety cap while walking huge lists

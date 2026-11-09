@@ -49,7 +49,7 @@ NSString *SFRoleName(SFRole role) {
 @implementation SFSnapshot
 - (instancetype)init {
   if ((self = [super init])) {
-    _nodes = [NSMutableArray array]; _hidden = [NSMutableArray array]; _texts = [NSMutableArray array];
+    _nodes = [NSMutableArray array]; _hidden = [NSMutableArray array]; _covered = [NSMutableArray array]; _texts = [NSMutableArray array];
     _notes = [NSMutableArray array]; _rowCandidates = [NSMutableArray array]; _scrolls = [NSMutableArray array];
     _remote = [NSMutableArray array]; _textItems = [NSMutableArray array];
   }

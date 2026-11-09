@@ -60,7 +60,7 @@ NSData *SFScreenJSON(BOOL debug) {
 
 // Top of the view tree with visibility facts, for diagnosing empty reads (GET /debug).
 static void Dump(UIView *v, int depth, NSMutableArray *out) {
-  if (depth > 9 || out.count > 400) return;
+  if (depth > 20 || out.count > 1500) return;
   [out addObject:[NSString stringWithFormat:@"%*s%@ hidden=%d alpha=%.2f pres=%.2f clip=%d ax=%d id=%@ %@", depth * 2, "", NSStringFromClass(v.class),
     v.hidden, v.alpha, v.layer.presentationLayer ? v.layer.presentationLayer.opacity : -1, v.clipsToBounds, v.isAccessibilityElement,
     v.accessibilityIdentifier ?: @"", NSStringFromCGRect(SFFrameOnScreen(v))]];

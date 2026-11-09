@@ -21,6 +21,15 @@ static SFProbe Probe(id obj, UIView *owner, CGRect vis, NSArray<UIWindow *> *win
   return r;
 }
 
+// What a finger would touch instead: the nearest labelled view at that spot ("Add … to a reading list?").
+static NSString *Describe(UIView *hit) {
+  for (UIView *v = hit; v; v = v.superview) {
+    if (v.accessibilityLabel.length) return v.accessibilityLabel;
+    for (UIView *sub in v.subviews) if (SFIsTextView(sub) && sub.accessibilityLabel.length) return sub.accessibilityLabel;
+  }
+  return hit ? NSStringFromClass(hit.class) : @"something";
+}
+
 // Under a third showing and too thin to tap reliably.
 static BOOL IsSliver(CGRect frame, CGRect vis) {
   CGFloat area = frame.size.width * frame.size.height;
@@ -93,6 +102,11 @@ static void Consider(SFSnapshot *s, id obj, UIView *owner, CGRect frame, CGRect 
     n.direction = DirectionTo(frame, scroll);
     n.context = isView ? SFContextFor(v, label, YES) : axContext;
     if (s.hidden.count < kSFMaxHiddenCollected) [s.hidden addObject:n];
+  } else if (!probe.reachable && !IsSliver(frame, vis) && vis.size.width >= kSFMinProbeSide && vis.size.height >= kSFMinProbeSide) {
+    // On screen but under something (a toast over a just-tapped button): not tappable, but its state is evidence.
+    n.coveredBy = Describe(SFHitView(SFMid(vis), s.windows));
+    n.value = [obj accessibilityValue];
+    [s.covered addObject:n];
   }
 }
 
@@ -158,13 +172,21 @@ static void Walk(SFSnapshot *s, UIView *v, CGRect clip, SFScrollArea *scroll) {
   if (onScreen && SFIsLoadingIndicator(v)) s.loading = YES;
 
   // Content drawn by another process (Safari sheets, web sign-in, some system UI) is opaque to us and to axe.
-  static Class remoteView;
-  if (!remoteView) remoteView = NSClassFromString(@"_UIRemoteView");
-  if (remoteView && [v isKindOfClass:remoteView] && onScreen) {
-    UIView *hit = SFHitView(SFMid(vis), s.windows);
-    NSString *host = @"";
+  // _UIRemoteView (older) and _UISceneHostingView (share sheet, iOS 17+) host another process's UI.
+  static Class remoteView, sceneHost;
+  if (!remoteView) { remoteView = NSClassFromString(@"_UIRemoteView"); sceneHost = NSClassFromString(@"_UISceneHostingView"); }
+  BOOL remote = (remoteView && [v isKindOfClass:remoteView]) || (sceneHost && [v isKindOfClass:sceneHost]);
+  if (remote && onScreen) {
+    NSString *host = SFNearestId(v);
     for (UIView *p = v.superview; p && !host.length; p = p.superview) if (![NSStringFromClass(p.class) hasPrefix:@"_"]) host = NSStringFromClass(p.class);
-    if (hit && [hit isDescendantOfView:v]) [s.remote addObject:@{@"frame": SFRectJSON(vis), @"host": host}];
+    // A host can span the screen while only part of it (a sheet) takes touches: any of 5 points will do.
+    BOOL reachable = NO;
+    for (int i = 1; i <= 5 && !reachable; i++) {
+      CGPoint p = CGPointMake(CGRectGetMidX(vis), CGRectGetMinY(vis) + vis.size.height * i / 6);
+      UIView *hit = SFHitView(p, s.windows);
+      reachable = hit && [hit isDescendantOfView:v];
+    }
+    if (reachable) [s.remote addObject:@{@"frame": SFRectJSON(vis), @"host": host}];
   }
   if (([v isKindOfClass:UICollectionViewCell.class] || [v isKindOfClass:UITableViewCell.class]) && vis.size.height >= kSFCellMinHeight && scroll) {
     SFRowCandidate *rc = [SFRowCandidate new];

@@ -52,13 +52,27 @@ export function lastScreen(s: Session): Screen | undefined {
 export async function get<T>(s: Session, path: string): Promise<T> {
   let r: Response;
   const method = /^\/(screen|debug)\b/.test(path) ? "GET" : "POST";
-  try { r = await fetch(`http://127.0.0.1:${s.port}${path}`, { method, headers: { "X-Simflick-Token": s.token } }); }
-  catch { throw new SimflickError(`no app listening on port ${s.port}; relaunch with \`simflick launch\``); }
+  try { r = await fetch(`http://127.0.0.1:${s.port}${path}`, { method, headers: { "X-Simflick-Token": s.token }, signal: AbortSignal.timeout(10000) }); }
+  catch (e) {
+    if ((e as Error).name !== "TimeoutError") throw new SimflickError(`no app listening on port ${s.port}; relaunch with \`simflick launch\``);
+    // A backgrounded app's main thread is suspended, so the library can't answer: say who is in front instead.
+    throw new SimflickError(`${s.bundleId} did not answer in 10 s; ${frontmostApp(s) ?? "it may be frozen or in the background"}`);
+  }
+  if (r.status === 404 && /^\/screen\b/.test(path)) throw new SimflickError(`${s.bundleId}'s main thread is busy (screen read timed out in the app)`);
   if (!r.ok) throw new SimflickError(`${path} -> HTTP ${r.status}`);
   return r.json() as Promise<T>;
 }
 
 // lang: run the app in another language, e.g. "de" (-AppleLanguages/-AppleLocale launch arguments).
+// Which app the simulator shows in front, per the system accessibility tree (axe), e.g. "Settings is in front".
+function frontmostApp(s: Session): string | undefined {
+  try {
+    const tree = JSON.parse(execFileSync("axe", ["describe-ui", "--udid", s.udid], { encoding: "utf8", stdio: ["ignore", "pipe", "ignore"], timeout: 8000 }));
+    const app = tree.find((n: { type?: string }) => n.type === "Application");
+    return app?.AXLabel ? `"${app.AXLabel}" is in front (the app is in the background; relaunch it or go back to it)` : undefined;
+  } catch { return undefined; }
+}
+
 export async function launch(bundleId: string, udid: string, port: number, lang?: string): Promise<Session> {
   if (!existsSync(DYLIB)) throw new SimflickError(`missing ${DYLIB}; run ./build.sh`);
   const token = randomBytes(24).toString("hex");

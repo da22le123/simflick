@@ -216,6 +216,19 @@ static void MergeSameId(SFSnapshot *s) {
   [s.nodes setArray:uniq];
 }
 
+// Controls a toast or banner lies on top of: say what they show (e.g. "Saved"), since the model can't tap them.
+static void CoveredNote(SFSnapshot *s) {
+  if (!s.covered.count || s.covered.count > kSFMaxCoveredReported) return;
+  NSMutableDictionary<NSString *, NSMutableArray *> *byCover = [NSMutableDictionary dictionary];
+  for (SFNode *n in s.covered) {
+    if (!n.label.length) continue;
+    NSString *what = n.value.length ? [NSString stringWithFormat:@"%@ (%@)", n.label, n.value] : n.label;
+    [byCover[n.coveredBy] ?: (byCover[n.coveredBy] = [NSMutableArray array]) addObject:what];
+  }
+  for (NSString *cover in byCover)
+    [s.notes addObject:[NSString stringWithFormat:@"(Under \"%@\", not tappable now: %@)", cover, [byCover[cover] componentsJoinedByString:@"; "]]];
+}
+
 // Order matters; each line says what it relies on.
 void SFRefine(SFSnapshot *s) {
   NearestTextContext(s);          // first: hidden nodes need context before ScrollPreviews
@@ -226,5 +239,6 @@ void SFRefine(SFSnapshot *s) {
   HiddenTabBarHint(s);
   MergeSameId(s);                 // collapses a control with the row made from it
   DropRedundantContext(s);        // after every pass that sets context
-  ScrollPreviews(s);              // last: summarises the final scrolled-away elements
+  ScrollPreviews(s);              // summarises the final scrolled-away elements
+  CoveredNote(s);
 }

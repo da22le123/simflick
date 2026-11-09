@@ -29,6 +29,7 @@ NSString *SFRoleName(SFRole role);
 @property(nonatomic, copy) NSString *scrollRef;
 @property(nonatomic) BOOL clipped, selected;
 @property(nonatomic, copy) NSString *direction; // hidden nodes only
+@property(nonatomic, copy) NSString *coveredBy; // covered nodes only: what lies on top
 - (NSDictionary *)json;
 - (NSDictionary *)hiddenJSON;
 @end
@@ -51,7 +52,7 @@ NSString *SFRoleName(SFRole role);
 
 @interface SFSnapshot : NSObject
 @property(nonatomic, strong) NSArray<UIWindow *> *windows;
-@property(nonatomic, strong) NSMutableArray<SFNode *> *nodes, *hidden;
+@property(nonatomic, strong) NSMutableArray<SFNode *> *nodes, *hidden, *covered;  // covered: on screen under a popup
 @property(nonatomic, strong) NSMutableArray<SFText *> *texts;
 @property(nonatomic, strong) NSMutableArray<NSString *> *notes;          // extra page text lines (hints)
 @property(nonatomic, strong) NSMutableArray<SFRowCandidate *> *rowCandidates;
