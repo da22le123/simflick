@@ -176,13 +176,15 @@ static void HiddenTabBarHint(SFSnapshot *s) {
 }
 
 // One control often shows up as its view, an inner AX element and a row: same id + overlapping frames = one entry.
+// A field and a non-field never merge: controls inside a field (Clear text) inherit its id but are separate.
 static int Preference(SFNode *n) { return (n.role == SFRoleRow ? 0 : 4) + (n.role == SFRoleButton ? 2 : 0) + (n.label.length ? 1 : 0); }
 static void MergeSameId(SFSnapshot *s) {
   NSMutableArray<SFNode *> *uniq = [NSMutableArray array];
   for (SFNode *n in s.nodes) {
     NSUInteger dup = NSNotFound;
     if (n.identifier.length) for (NSUInteger j = 0; j < uniq.count && dup == NSNotFound; j++)
-      if ([uniq[j].identifier isEqualToString:n.identifier] && CGRectIntersectsRect(n.frame, uniq[j].frame)) dup = j;
+      if ([uniq[j].identifier isEqualToString:n.identifier] && CGRectIntersectsRect(n.frame, uniq[j].frame) &&
+          (n.role == SFRoleInput) == (uniq[j].role == SFRoleInput)) dup = j;
     if (dup == NSNotFound) [uniq addObject:n];
     else if (Preference(n) > Preference(uniq[dup])) uniq[dup] = n;
   }
