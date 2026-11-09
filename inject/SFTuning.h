@@ -33,7 +33,8 @@ static const CGFloat kSFSamePlaceCenter = 6;        // centres this close…
 static const CGFloat kSFSamePlaceSize = 12;         // …and sizes this close = the same control
 
 // Output caps
-static const NSUInteger kSFMaxHidden = 200;
+static const NSUInteger kSFMaxHidden = 100;           // per scroll area
+static const NSUInteger kSFMaxHiddenCollected = 2000; // safety cap while walking huge lists
 static const NSUInteger kSFMaxTextItems = 40;
 static const NSUInteger kSFMaxAhead = 20;           // hidden-element preview per scroll area
 static const int kSFMaxAXDepth = 40;

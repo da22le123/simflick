@@ -58,10 +58,12 @@ export async function get<T>(s: Session, path: string): Promise<T> {
   return r.json() as Promise<T>;
 }
 
-export async function launch(bundleId: string, udid: string, port: number): Promise<Session> {
+// lang: run the app in another language, e.g. "de" (-AppleLanguages/-AppleLocale launch arguments).
+export async function launch(bundleId: string, udid: string, port: number, lang?: string): Promise<Session> {
   if (!existsSync(DYLIB)) throw new SimflickError(`missing ${DYLIB}; run ./build.sh`);
   const token = randomBytes(24).toString("hex");
-  execFileSync("xcrun", ["simctl", "launch", "--terminate-running-process", udid, bundleId], {
+  const langArgs = lang ? ["-AppleLanguages", `(${lang})`, "-AppleLocale", lang] : [];
+  execFileSync("xcrun", ["simctl", "launch", "--terminate-running-process", udid, bundleId, ...langArgs], {
     env: { ...process.env, SIMCTL_CHILD_DYLD_INSERT_LIBRARIES: DYLIB, SIMCTL_CHILD_SIMFLICK_PORT: String(port), SIMCTL_CHILD_SIMFLICK_TOKEN: token }, stdio: "ignore",
   });
   const s: Session = { udid, port, bundleId, token };
@@ -94,8 +96,9 @@ export async function settled(s: Session, before?: string, capMs = 5500, quietMs
   if (before) while (keyOf(cur) === before && Date.now() - start < 500) { await sleep(30); cur = await get<Screen>(s, "/screen"); }
   let prev = keyOf(cur), since = Date.now();
   while (Date.now() - start < capMs) {
-    // While a spinner shows, keep waiting (up to 5 s) so the model doesn't judge a half-loaded screen.
-    const loadingWait = (cur.loading || looksLikeSkeleton(cur)) && Date.now() - start < 5000;
+    // While a spinner shows, keep waiting so the model doesn't judge a half-loaded screen; but a spinner that
+    // never stops (background sync) shouldn't stall every action: give up once nothing else changed for 1.5 s.
+    const loadingWait = (cur.loading || looksLikeSkeleton(cur)) && Date.now() - start < 5000 && Date.now() - since < 1500;
     if (!cur.animating && !loadingWait && Date.now() - since >= quietMs) break;
     await sleep(35);
     cur = await get<Screen>(s, "/screen");

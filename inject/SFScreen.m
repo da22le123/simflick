@@ -3,7 +3,7 @@
 
 // The keyboard is drawn by another process; the app only learns its frame from these notifications.
 static CGRect gKeyboard;
-CGRect SFKeyboardFrame(void) { return gKeyboard; }
+CGRect SFKeyboardFrame(void) { return gKeyboard; }  // screen coordinates, like everything else
 void SFKeyboardTrack(void) {
   NSNotificationCenter *nc = NSNotificationCenter.defaultCenter;
   [nc addObserverForName:UIKeyboardWillChangeFrameNotification object:nil queue:NSOperationQueue.mainQueue usingBlock:^(NSNotification *n) {
@@ -18,14 +18,14 @@ static NSString *NavTitle(UIView *v) {
   if ([v isKindOfClass:UINavigationBar.class]) {
     UINavigationItem *it = ((UINavigationBar *)v).topItem;
     NSString *t = it.title.length ? it.title : ([it.titleView accessibilityLabel] ?: nil);
-    if (t.length && v.window && CGRectIntersectsRect([v convertRect:v.bounds toView:nil], UIScreen.mainScreen.bounds)) return t;
+    if (t.length && v.window && CGRectIntersectsRect(SFFrameOnScreen(v), SFAppBounds())) return t;
   }
   for (UIView *sub in v.subviews.reverseObjectEnumerator) { NSString *t = NavTitle(sub); if (t) return t; }
   return nil;
 }
 
 static NSDictionary *KeyboardJSON(UIView *focused) {
-  CGRect on = CGRectIntersection(gKeyboard, UIScreen.mainScreen.bounds);
+  CGRect on = CGRectIntersection(SFKeyboardFrame(), SFAppBounds());
   NSMutableDictionary *kb = [@{@"open": @(!CGRectIsEmpty(on))} mutableCopy];
   if (!CGRectIsEmpty(on)) kb[@"frame"] = SFRectJSON(on);
   if (focused) {
@@ -50,7 +50,7 @@ NSData *SFScreenJSON(BOOL debug) {
   for (SFNode *n in s.nodes) [nodes addObject:n.json];
   for (SFNode *n in s.hidden) [hidden addObject:n.hiddenJSON];
   for (SFScrollArea *a in s.scrolls) [scrolls addObject:a.json];
-  CGSize screen = UIScreen.mainScreen.bounds.size;
+  CGSize screen = SFAppBounds().size;
   NSDictionary *out = @{@"title": title ?: @"", @"screen": @[@(screen.width), @(screen.height)], @"windows": windows,
     @"keyboard": KeyboardJSON(s.focused), @"active": @(UIApplication.sharedApplication.applicationState == UIApplicationStateActive),
     @"animating": @(s.animating), @"loading": @(s.loading), @"elements": nodes, @"textItems": s.textItems, @"hidden": hidden,

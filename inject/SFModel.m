@@ -61,7 +61,15 @@ NSString *SFRoleName(SFRole role) {
 }
 - (NSArray<NSString *> *)pageText {
   NSMutableArray *out = [NSMutableArray array];
-  for (SFText *t in _texts) if (t.shown) [out addObject:t.label];
+  NSMutableArray<SFText *> *seen = [NSMutableArray array];
+  for (SFText *t in _texts) {
+    if (!t.shown) continue;
+    BOOL repeat = NO;  // the same text at the same spot (a view and its accessibility node)
+    for (SFText *o in seen) if ([o.label isEqualToString:t.label] && CGRectIntersectsRect(o.frame, t.frame)) { repeat = YES; break; }
+    if (repeat) continue;
+    [seen addObject:t];
+    [out addObject:t.label];
+  }
   [out addObjectsFromArray:_notes];
   return out;
 }

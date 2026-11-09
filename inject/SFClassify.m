@@ -22,10 +22,30 @@ SFRole SFRoleOf(id obj) {
   return SFRoleElement;
 }
 
-// Swift Charts exposes every bar as an element ("0 to 0,5", value "20"): data points, not controls.
+// React Native (Fabric) text: RCTParagraphComponentView, which is not always an accessibility element.
+BOOL SFIsRNText(UIView *v) { return [NSStringFromClass(v.class) containsString:@"Paragraph"]; }
+
+// Readable text from any framework: RN text, or an accessibility element that is static text / a header, not a control.
+BOOL SFIsTextView(UIView *v) {
+  if (SFIsRNText(v)) return YES;
+  SFRole role = v.isAccessibilityElement ? SFRoleOf(v) : SFRoleElement;
+  return role == SFRoleText || role == SFRoleHeader;
+}
+
+// A bar/point of a chart (Swift Charts, or any view with an accessibilityChartDescriptor): data, not a control.
 BOOL SFIsChartPoint(id obj) {
-  if ([obj isKindOfClass:UIView.class] || ([obj accessibilityTraits] & (UIAccessibilityTraitButton | UIAccessibilityTraitLink))) return NO;
-  return [[obj accessibilityLabel] rangeOfString:@"^-?[0-9.,]+ to -?[0-9.,]+$" options:NSRegularExpressionSearch].location != NSNotFound;
+  SEL descriptor = NSSelectorFromString(@"accessibilityChartDescriptor");
+  id c = obj;
+  for (int i = 0; i < 3 && [c respondsToSelector:@selector(accessibilityContainer)] && (c = [c accessibilityContainer]); i++)
+    if ([c respondsToSelector:descriptor] && ((id (*)(id, SEL))objc_msgSend)(c, descriptor)) return YES;
+  return NO;
+}
+
+// Progress bars, spinners, timers: they update by themselves and can't be acted on.
+BOOL SFIsStatus(id obj) {
+  if ([obj isKindOfClass:UIActivityIndicatorView.class] || [obj isKindOfClass:UIProgressView.class]) return YES;
+  UIAccessibilityTraits t = [obj accessibilityTraits];
+  return (t & UIAccessibilityTraitUpdatesFrequently) && !(t & (UIAccessibilityTraitButton | UIAccessibilityTraitLink | UIAccessibilityTraitAdjustable));
 }
 
 // Content still arriving: a spinning UIActivityIndicatorView or a web view that is loading.

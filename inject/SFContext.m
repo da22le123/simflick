@@ -2,14 +2,13 @@
 #import "SFModel.h"
 #import <objc/message.h>
 
-static BOOL IsParagraph(UIView *v) { return [NSStringFromClass(v.class) containsString:@"Paragraph"]; }
-
 // Skips text owned by other tappable elements (e.g. a neighbouring tab), which would mislabel this one.
 static void CollectText(UIView *v, UIView *me, NSMutableArray *out, int depth, BOOL offscreenOK) {
   CALayer *shown = v.layer.presentationLayer;
   if (depth > kSFContextDepth || out.count > kSFContextMaxTexts || v.hidden || v.alpha < kSFInvisibleAlpha || (shown && shown.opacity < kSFInvisibleAlpha)) return;
-  if (v != me && v.isAccessibilityElement && !IsParagraph(v)) return;
-  if (IsParagraph(v)) {
+  BOOL text = SFIsTextView(v);
+  if (v != me && v.isAccessibilityElement && !text) return;
+  if (v != me && text) {
     // Closed sheets park their text off screen; only count text that is on screen.
     CGRect f = [v convertRect:v.bounds toView:nil];
     if (v.accessibilityLabel.length && v.window && (offscreenOK || CGRectIntersectsRect(f, v.window.bounds))) [out addObject:v.accessibilityLabel];

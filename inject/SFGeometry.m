@@ -21,6 +21,13 @@ NSArray<UIWindow *> *SFWindows(void) {
   }];
 }
 
+// Everything here is in screen coordinates (like AXe and screenshots). The app's area: the whole screen on iPhone,
+// only the app's part in iPad Split View / Stage Manager.
+CGRect SFAppBounds(void) {
+  for (UIWindow *w in SFWindows()) if (w.rootViewController) return [w convertRect:w.bounds toWindow:nil];
+  return UIScreen.mainScreen.bounds;
+}
+
 // The view a real tap at screen point p would land on (topmost window first).
 UIView *SFHitView(CGPoint p, NSArray<UIWindow *> *windows) {
   for (UIWindow *w in windows.reverseObjectEnumerator) {

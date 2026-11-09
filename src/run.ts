@@ -113,7 +113,8 @@ async function choose(s: Session, sc: Screen, goal: string, history: Step[]) {
     };
   }
   const remote = (sc.remote ?? []).map((r) => `Part of the screen (${r.frame.join(",")}) shows ${r.host} content from another process that cannot be read or targeted; its controls are not listed.`).join("\n");
-  const kb = sc.keyboard.open ? `Keyboard is open, editing ${sc.keyboard.focused ?? "a field"}.` : "Keyboard is closed.";
+  const kb = (sc.keyboard.open ? `Keyboard is open, editing ${sc.keyboard.focused ?? "a field"}.` : "Keyboard is closed.") +
+    (sc.loading ? " A loading indicator is visible." : "");
   const body = {
     model: process.env.TYPESAFE_MODEL ?? "jev-latest",
     state: {

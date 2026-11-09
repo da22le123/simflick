@@ -1,4 +1,5 @@
 // Plain SwiftUI app (no simflick-specific code) used to test simflick against native UI.
+import Charts
 import SwiftUI
 
 @main
@@ -11,6 +12,7 @@ struct RootView: View {
     TabView {
       HomeView().tabItem { Label("Home", systemImage: "house") }
       SettingsView().tabItem { Label("Settings", systemImage: "gear") }
+      StatusView().tabItem { Label("Status", systemImage: "chart.bar") }
     }
   }
 }
@@ -82,6 +84,23 @@ struct SettingsView: View {
         Button("Reset", role: .destructive) { notifications = true; volume = 0.5 }
       }
       .navigationTitle("Settings")
+    }
+  }
+}
+
+// A spinner, a progress bar and a chart: content a reader must not mistake for controls or a settled screen.
+struct StatusView: View {
+  let days = [("Mon", 3), ("Tue", 5), ("Wed", 2), ("Thu", 6)]
+  var body: some View {
+    NavigationStack {
+      VStack(spacing: 24) {
+        ProgressView()
+        ProgressView(value: 0.4) { Text("Upload") }
+        Chart(days, id: \.0) { BarMark(x: .value("Day", $0.0), y: .value("Cards", $0.1)) }.frame(height: 160)
+        Button("Refresh") {}
+      }
+      .padding()
+      .navigationTitle("Status")
     }
   }
 }

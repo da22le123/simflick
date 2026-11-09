@@ -7,7 +7,7 @@ import {
 import { run } from "./run.js";
 
 const USAGE = `usage: simflick <command>
-  launch <bundle-id> [--udid U] [--port P]   inject + launch, wait until it answers
+  launch <bundle-id> [--udid U] [--port P] [--lang de]   inject + launch, wait until it answers
   screen [--json]                            what's on screen now (numbers usable by tap)
   tap <n|testID|x,y> [--screen]              tap an element from the last screen
   scroll <S0|testID> <up|down|left|right>    controlled drag inside a scroll area [--amount 0.6]
@@ -58,8 +58,8 @@ async function main() {
   const [cmd, ...rest] = pos;
   const udid = typeof flags.udid === "string" ? flags.udid : undefined;
   if (cmd === "launch") {
-    if (!rest[0]) throw new SimflickError("usage: simflick launch <bundle-id> [--udid U] [--port P]");
-    const s = await launch(rest[0], udid ?? bootedUdid(), Number(flags.port ?? 8765));
+    if (!rest[0]) throw new SimflickError("usage: simflick launch <bundle-id> [--udid U] [--port P] [--lang de]");
+    const s = await launch(rest[0], udid ?? bootedUdid(), Number(flags.port ?? 8765), flags.lang as string | undefined);
     console.log(`launched ${s.bundleId} on ${s.udid}, port ${s.port}`);
     return;
   }

@@ -38,7 +38,8 @@ NSString *SFRoleName(SFRole role);
 @property(nonatomic, copy) NSString *label;
 @property(nonatomic) CGRect frame, visibleFrame;  // frame rounded; visibleFrame raw
 @property(nonatomic, copy) NSString *scrollRef;
-@property(nonatomic) BOOL shown, header, fromAX;
+@property(nonatomic) BOOL shown, header, reactNative;
+@property(nonatomic, copy) NSString *direction;  // scrolled out of view: which way
 @end
 
 // A list cell or accessibility container that may become an "open item" row.
@@ -70,6 +71,7 @@ NSArray<NSNumber *> *SFPointJSON(CGPoint p);
 CGRect SFRound(CGRect r);
 CGPoint SFMid(CGRect r);
 NSArray<UIWindow *> *SFWindows(void);
+CGRect SFAppBounds(void);
 UIView *SFHitView(CGPoint p, NSArray<UIWindow *> *windows);
 BOOL SFHitBelongsTo(UIView *hit, UIView *owner);
 NSString *SFNearestId(UIView *v);
@@ -78,7 +80,10 @@ CGRect SFFrameOnScreen(UIView *v);
 // Classification (SFClassify.m).
 SFRole SFRoleOf(id obj);
 BOOL SFIsChartPoint(id obj);
+BOOL SFIsStatus(id obj);
 BOOL SFIsLoadingIndicator(UIView *v);
+BOOL SFIsRNText(UIView *v);
+BOOL SFIsTextView(UIView *v);
 BOOL SFHasWords(NSString *s);
 
 // Context text (SFContext.m).

@@ -30,26 +30,26 @@ static void NearestTextContext(SFSnapshot *s) {
   NSMutableArray<SFNode *> *all = [NSMutableArray arrayWithArray:s.nodes];
   [all addObjectsFromArray:s.hidden];
   for (SFNode *n in all) {
-    if (n.role == SFRoleText || n.context.length || !n.scrollRef) continue;
+    if (n.context.length || !n.scrollRef) continue;
     CGPoint m = SFMid(n.frame);
     double best = kSFNearestTextRadius; NSString *ctx = nil;
     for (SFText *t in s.texts) {
-      if (!t.fromAX || ![t.scrollRef isEqualToString:n.scrollRef]) continue;
+      if (![t.scrollRef isEqualToString:n.scrollRef]) continue;
       double d = hypot(SFMid(t.frame).x - m.x, SFMid(t.frame).y - m.y);
       if (d < best) { best = d; ctx = t.label; }
     }
-    if (ctx) n.context = ctx;
+    if (ctx) n.context = ctx.length > kSFContextMaxChars ? [ctx substringToIndex:kSFContextMaxChars] : ctx;
   }
 }
 
 // SwiftUI controls appear both as a view and as an accessibility object: merge same-place, same-size entries,
 // keeping the richer one (inputs over text, labelled over unlabelled, with an id over without).
 static int Richness(SFNode *n) {
-  return (n.role == SFRoleInput ? 8 : 0) + (n.role == SFRoleText ? -4 : 0) + (n.label.length ? 2 : 0) + (n.identifier.length ? 1 : 0) + (n.value.length ? 1 : 0);
+  return (n.role == SFRoleInput ? 8 : 0) + (n.label.length ? 2 : 0) + (n.identifier.length ? 1 : 0) + (n.value.length ? 1 : 0);
 }
-static void MergeSamePlace(SFSnapshot *s) {
+static void MergeSamePlaceIn(NSMutableArray<SFNode *> *nodes) {
   NSMutableArray<SFNode *> *merged = [NSMutableArray array];
-  for (SFNode *n in s.nodes) {
+  for (SFNode *n in nodes) {
     NSInteger dup = NSNotFound;
     for (NSUInteger j = 0; j < merged.count && dup == NSNotFound; j++) {
       CGRect f = n.frame, g = merged[j].frame;
@@ -59,19 +59,18 @@ static void MergeSamePlace(SFSnapshot *s) {
     if (dup == NSNotFound) [merged addObject:n];
     else if (Richness(n) > Richness(merged[dup])) merged[dup] = n;
   }
-  [s.nodes setArray:merged];
+  [nodes setArray:merged];
+}
+static void MergeSamePlace(SFSnapshot *s) {
+  MergeSamePlaceIn(s.nodes);
+  MergeSamePlaceIn(s.hidden);  // scrolled-away duplicates too, or counts and previews double up
 }
 
-// A caption inside a control with the same label is that control's text, not a second element.
-static void DropCaptionsInsideControls(SFSnapshot *s) {
-  NSMutableArray<SFNode *> *kept = [NSMutableArray array];
-  for (SFNode *n in s.nodes) {
-    BOOL inside = NO;
-    if (n.role == SFRoleText) for (SFNode *o in s.nodes)
-      if (o != n && o.role != SFRoleText && [o.label isEqualToString:n.label] && CGRectContainsPoint(CGRectInset(o.frame, -2, -2), SFMid(n.frame))) inside = YES;
-    if (!inside) [kept addObject:n];
-  }
-  [s.nodes setArray:kept];
+// Context that the label already says ("Games" for a link "Games\nOn English Wikipedia") adds nothing.
+static void DropRedundantContext(SFSnapshot *s) {
+  NSMutableArray<SFNode *> *all = [NSMutableArray arrayWithArray:s.nodes];
+  [all addObjectsFromArray:s.hidden];
+  for (SFNode *n in all) if (n.context.length && [n.label containsString:n.context]) n.context = nil;
 }
 
 // --- "Open item" rows: something that opens when tapped (a post, a list cell) but isn't one clean element. ---
@@ -97,7 +96,7 @@ static void RowsFromCells(SFSnapshot *s) {
     NSMutableArray<NSString *> *texts = [NSMutableArray array];
     NSMutableArray<SFNode *> *inner = [NSMutableArray array];
     for (SFText *t in s.texts)
-      if (t.fromAX && t.shown && !t.header && CGRectContainsPoint(cf, SFMid(t.visibleFrame))) [texts addObject:t.label];
+      if (t.shown && !t.header && CGRectContainsPoint(cf, SFMid(t.visibleFrame))) [texts addObject:t.label];
     for (SFNode *n in s.nodes)  // same scroll area: not e.g. a tab bar over the cell's edge
       if (CGRectContainsPoint(cf, SFMid(n.frame)) && [n.scrollRef isEqualToString:cell.scrollRef]) [inner addObject:n];
     // Not a row: one control (it already is the row), a carousel host, or a duplicate of a row already added.
@@ -145,9 +144,10 @@ static void ContainersToRows(SFSnapshot *s) {
 }
 
 // SwiftUI views with only a tap gesture have no element; their visible text is the best handle.
+// Not RN: tappable RN text is exposed as a button already.
 static void TextItems(SFSnapshot *s) {
   for (SFText *t in s.texts) {
-    if (!t.fromAX || !t.shown || t.header) continue;
+    if (!t.shown || t.header || t.reactNative) continue;
     CGPoint mid = SFMid(t.visibleFrame); BOOL covered = NO;
     for (SFNode *n in s.nodes) if (n.role != SFRoleRow && CGRectContainsPoint(n.frame, mid)) { covered = YES; break; }
     if (!covered && s.textItems.count < kSFMaxTextItems) [s.textItems addObject:@{@"label": t.label, @"tap": SFPointJSON(mid)}];
@@ -155,11 +155,25 @@ static void TextItems(SFSnapshot *s) {
 }
 
 // What each scroll area would reveal, so the model can scroll toward something it can't see yet.
+// Also counts and trims the scrolled-away elements per area.
 static void ScrollPreviews(SFSnapshot *s) {
+  NSMutableArray<SFNode *> *kept = [NSMutableArray array];
+  for (SFScrollArea *a in s.scrolls) {
+    NSArray *mine = [s.hidden filteredArrayUsingPredicate:[NSPredicate predicateWithFormat:@"scrollRef == %@", a.ref]];
+    a.hiddenCount = mine.count;
+    [kept addObjectsFromArray:[mine subarrayWithRange:NSMakeRange(0, MIN(mine.count, kSFMaxHidden))]];
+  }
+  [s.hidden setArray:kept];
   for (SFScrollArea *a in s.scrolls) {
     NSMutableArray *ahead = [NSMutableArray array];
     for (SFNode *h in s.hidden) if ([h.scrollRef isEqualToString:a.ref] && ahead.count < kSFMaxAhead)
       [ahead addObject:@{@"dir": h.direction, @"what": [@[h.label ?: @"", h.context ?: @""] componentsJoinedByString:@" — "]}];
+    for (SFText *t in s.texts) {  // text further on, unless a control already listed says it
+      if (!t.direction || ![t.scrollRef isEqualToString:a.ref] || ahead.count >= kSFMaxAhead) continue;
+      BOOL said = NO;
+      for (SFNode *h in s.hidden) if ([h.label containsString:t.label] || [h.context containsString:t.label]) { said = YES; break; }
+      if (!said) [ahead addObject:@{@"dir": t.direction, @"what": t.label}];
+    }
     a.ahead = ahead;
   }
 }
@@ -174,8 +188,8 @@ static void HiddenTabBarHint(SFSnapshot *s) {
       if (vc.presentedViewController) [queue addObject:vc.presentedViewController];
       if (![vc isKindOfClass:UITabBarController.class]) continue;
       UITabBar *bar = ((UITabBarController *)vc).tabBar;
-      CGRect f = bar.window ? [bar convertRect:bar.bounds toView:nil] : CGRectNull;
-      BOOL hidden = !bar.window || bar.hidden || bar.alpha <= kSFInvisibleAlpha || !CGRectIntersectsRect(f, UIScreen.mainScreen.bounds);
+      CGRect f = bar.window ? SFFrameOnScreen(bar) : CGRectNull;
+      BOOL hidden = !bar.window || bar.hidden || bar.alpha <= kSFInvisibleAlpha || !CGRectIntersectsRect(f, SFAppBounds());
       // Not UITabBarController.isTabBarHidden (iOS 18): it stays NO when a pushed screen hides the bar.
       if (!hidden) continue;
       NSMutableArray *names = [NSMutableArray array];
@@ -186,16 +200,15 @@ static void HiddenTabBarHint(SFSnapshot *s) {
   }
 }
 
-// One control often shows up as its view, an inner AX element (its icon) and a row: same id + overlapping = one entry.
-// Ids are inherited from ancestors, so a control inside a field (Clear text) shares its id: a field and a non-field
-// never merge. Known gap: a card with an id around a button without one would merge too.
+// A bar control often shows up as its view, its icon and a row: same id + overlapping = one entry. Only outside
+// lists: there an id is often inherited by a card's own buttons. A field and a control inside it (Clear) stay apart.
 static int Preference(SFNode *n) { return (n.role == SFRoleRow ? 0 : 4) + (n.role == SFRoleButton ? 2 : 0) + (n.label.length ? 1 : 0); }
 static void MergeSameId(SFSnapshot *s) {
   NSMutableArray<SFNode *> *uniq = [NSMutableArray array];
   for (SFNode *n in s.nodes) {
     NSUInteger dup = NSNotFound;
     if (n.identifier.length) for (NSUInteger j = 0; j < uniq.count && dup == NSNotFound; j++)
-      if ([uniq[j].identifier isEqualToString:n.identifier] && CGRectIntersectsRect(n.frame, uniq[j].frame) &&
+      if (!n.scrollRef && !uniq[j].scrollRef && [uniq[j].identifier isEqualToString:n.identifier] && CGRectIntersectsRect(n.frame, uniq[j].frame) &&
           (n.role == SFRoleInput) == (uniq[j].role == SFRoleInput)) dup = j;
     if (dup == NSNotFound) [uniq addObject:n];
     else if (Preference(n) > Preference(uniq[dup])) uniq[dup] = n;
@@ -207,11 +220,11 @@ static void MergeSameId(SFSnapshot *s) {
 void SFRefine(SFSnapshot *s) {
   NearestTextContext(s);          // first: hidden nodes need context before ScrollPreviews
   MergeSamePlace(s);              // before rows: duplicates would count as two inner elements
-  DropCaptionsInsideControls(s);  // before rows: same reason
   RowsFromCells(s);               // adds rows; its duplicate check sees rows added earlier in the loop
   ContainersToRows(s);            // sees cell rows as inner elements
   TextItems(s);                   // after both row passes: text under a non-row element is covered
-  ScrollPreviews(s);
   HiddenTabBarHint(s);
-  MergeSameId(s);                 // last: collapses a control with the row made from it
+  MergeSameId(s);                 // collapses a control with the row made from it
+  DropRedundantContext(s);        // after every pass that sets context
+  ScrollPreviews(s);              // last: summarises the final scrolled-away elements
 }

@@ -52,15 +52,17 @@ static void Consider(SFSnapshot *s, id obj, UIView *owner, CGRect frame, CGRect 
   if (s.debug && !probe.reachable && !isView) DebugReject(s, obj, owner, frame, vis);
   BOOL shown = probe.reachable && !IsSliver(frame, vis);
   SFRole role = SFRoleOf(obj);
-  if (SFIsChartPoint(obj)) return;
-  if (!isView && shown && ([label isEqualToString:@"In progress"] || [label isEqualToString:@"Loading"])) s.loading = YES;
+  // Chart data points and progress indicators are information, not controls: read them as "label: value".
+  BOOL readout = SFIsChartPoint(obj) || SFIsStatus(obj);
+  if (readout && [[obj accessibilityValue] length]) label = [NSString stringWithFormat:@"%@: %@", label, [obj accessibilityValue]];
 
-  // Non-view text/headers (SwiftUI) are page text and context sources, not things to act on.
-  if (!isView && (role == SFRoleText || role == SFRoleHeader)) {
-    if (label.length && (shown || scroll)) {
+  // Text and headers (UILabel, SwiftUI Text) are page text and context sources, not things to act on.
+  if (role == SFRoleText || role == SFRoleHeader || readout) {
+    if (label.length && (shown || scroll)) {  // covered text in a list still serves as context
       SFText *t = [SFText new];
       t.label = label; t.frame = SFRound(frame); t.visibleFrame = vis; t.scrollRef = scroll.ref;
-      t.shown = shown; t.header = role == SFRoleHeader; t.fromAX = YES;
+      t.shown = shown; t.header = role == SFRoleHeader;
+      if (!shown && [scroll.more containsObject:DirectionTo(frame, scroll)]) t.direction = DirectionTo(frame, scroll);
       [s.texts addObject:t];
     }
     return;
@@ -86,11 +88,11 @@ static void Consider(SFSnapshot *s, id obj, UIView *owner, CGRect frame, CGRect 
     n.context = isView ? ((scroll || nested) ? SFContextFor(v, label, NO) : @"") : (scroll ? axContext : @"");
     n.selected = ([obj accessibilityTraits] & UIAccessibilityTraitSelected) != 0;
     [s.nodes addObject:n];
-  } else if (scroll) {
-    scroll.hiddenCount++;
+  } else if ([scroll.more containsObject:DirectionTo(frame, scroll)]) {
+    // Scrolling that way can bring it into view (also from under a tab bar). Otherwise it's covered or truncated: dropped.
     n.direction = DirectionTo(frame, scroll);
     n.context = isView ? SFContextFor(v, label, YES) : axContext;
-    if (s.hidden.count < kSFMaxHidden) [s.hidden addObject:n];
+    if (s.hidden.count < kSFMaxHiddenCollected) [s.hidden addObject:n];
   }
 }
 
@@ -105,7 +107,7 @@ static void WalkAX(SFSnapshot *s, id el, UIView *owner, CGRect clip, SFScrollAre
   if (![el isAccessibilityElement] && kids.count >= 2) {
     CGRect f = [el respondsToSelector:@selector(accessibilityFrame)] ? [el accessibilityFrame] : CGRectNull;
     if (s.debug) [s.debug addObject:@{@"container": NSStringFromClass([el class]), @"kids": @(kids.count), @"frame": SFRectJSON(f), @"inScroll": @(scroll != nil)}];
-    CGRect gf = CGRectIntersection(f, clip), screen = UIScreen.mainScreen.bounds;
+    CGRect gf = CGRectIntersection(f, clip), screen = SFAppBounds();
     if (scroll && !CGRectIsNull(f) && !CGRectIsEmpty(gf) && gf.size.height >= kSFGroupMinHeight && gf.size.height < screen.size.height * kSFGroupMaxScreenHeight && gf.size.width >= screen.size.width * kSFGroupMinScreenWidth) {
       SFRowCandidate *rc = [SFRowCandidate new];
       rc.frame = gf; rc.scrollRef = scroll.ref; rc.axGroup = YES;
@@ -172,14 +174,15 @@ static void Walk(SFSnapshot *s, UIView *v, CGRect clip, SFScrollArea *scroll) {
   SFScrollArea *mine = ScrollAreaFor(s, v, vis) ?: scroll;
   if (v.clipsToBounds || [v isKindOfClass:UIScrollView.class]) clip = vis;
 
-  // Visible RN text (Fabric paragraphs) becomes page text, like Jev's visible-text block.
-  if ([NSStringFromClass(v.class) containsString:@"Paragraph"] && onScreen && vis.size.height >= 4 && v.accessibilityLabel.length &&
-      SFHitBelongsTo(SFHitView(SFMid(vis), s.windows), v)) {
-    SFText *t = [SFText new];
-    t.label = v.accessibilityLabel; t.frame = SFRound(frame); t.visibleFrame = vis; t.shown = YES;
-    [s.texts addObject:t];
-  }
-  if (v.isAccessibilityElement || [v conformsToProtocol:@protocol(UITextInput)]) Consider(s, v, v, frame, vis, mine, nil);
+  // Visible RN text becomes page text whether or not it's an accessibility element (inside a button it isn't).
+  // No scroll ref: RN controls get context from the view tree (SFContextFor), not from the nearest text.
+  if (SFIsRNText(v)) {
+    if (onScreen && vis.size.height >= 4 && v.accessibilityLabel.length && SFHitBelongsTo(SFHitView(SFMid(vis), s.windows), v)) {
+      SFText *t = [SFText new];
+      t.label = v.accessibilityLabel; t.frame = SFRound(frame); t.visibleFrame = vis; t.shown = YES; t.reactNative = YES;
+      [s.texts addObject:t];
+    }
+  } else if (v.isAccessibilityElement || [v conformsToProtocol:@protocol(UITextInput)]) Consider(s, v, v, frame, vis, mine, nil);
   // SwiftUI (and some UIKit containers) describe content as accessibility elements that are not views.
   // RN views are fully covered by the view walk (text included); skipping their AX children keeps reads fast.
   NSArray *axKids = [NSStringFromClass(v.class) hasPrefix:@"RCT"] ? @[] : SFAXChildren(v);
@@ -193,7 +196,7 @@ SFSnapshot *SFCollect(BOOL debug) {
   if (debug) s.debug = [NSMutableArray array];
   CGRect kb = SFKeyboardFrame();
   for (UIWindow *w in s.windows) {
-    CGRect clip = w.screen.bounds;
+    CGRect clip = [w convertRect:w.bounds toWindow:nil];
     // The keyboard is another process's window; whatever it covers can't be tapped.
     if (!CGRectIsEmpty(CGRectIntersection(kb, clip))) clip.size.height = MAX(0, CGRectGetMinY(kb) - clip.origin.y);
     Walk(s, w, clip, nil);
