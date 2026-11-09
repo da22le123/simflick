@@ -5,7 +5,8 @@ import { join } from "node:path";
 
 const out = process.argv[2] ?? "golden";
 const only = process.argv.slice(3);
-const udid = process.env.UDID ?? "B388B05F-CEB1-4AAC-99BC-FB79EC701B11";
+const udid = process.env.UDID ?? execFileSync("xcrun", ["simctl", "list", "devices", "booted"], { encoding: "utf8" }).match(/[0-9A-F-]{36}/)?.[0];
+if (!udid) throw new Error("no booted simulator; set UDID");
 const sf = (...a) => execFileSync("simflick", a, { encoding: "utf8", stdio: ["ignore", "pipe", "pipe"], timeout: 60000 });
 const screen = () => JSON.parse(sf("screen", "--json"));
 const find = (re) => {
