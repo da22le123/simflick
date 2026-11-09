@@ -30,6 +30,7 @@ NSString *SFRoleName(SFRole role);
 @property(nonatomic) BOOL clipped, selected;
 @property(nonatomic, copy) NSString *direction; // hidden nodes only
 @property(nonatomic, copy) NSString *coveredBy; // covered nodes only: what lies on top
+@property(nonatomic, weak) id source;            // the view or accessibility element it came from
 - (NSDictionary *)json;
 - (NSDictionary *)hiddenJSON;
 @end
@@ -98,6 +99,7 @@ void SFRefine(SFSnapshot *s);
 NSData *SFScreenJSON(BOOL debug);
 NSData *SFViewDump(void);
 NSData *SFHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *query);
+BOOL SFActivateAt(CGPoint p, NSString **label);
 void SFKeyboardTrack(void);
 CGRect SFKeyboardFrame(void);
 void SFServe(void);

@@ -12,13 +12,39 @@ void SFKeyboardTrack(void) {
     gKeyboard = CGRectZero; }];
 }
 
+static NSString *CentredText(UIView *bar, CGFloat midX) {
+  NSString *best = nil; CGFloat bestD = 60;  // further off-centre than this is a side item, not the title
+  NSMutableArray<UIView *> *queue = [NSMutableArray arrayWithObject:bar];
+  for (NSUInteger i = 0; i < queue.count && i < 300; i++) {
+    UIView *v = queue[i];
+    if (v.hidden || v.alpha < kSFInvisibleAlpha) continue;
+    if (v != bar && SFIsTextView(v) && v.accessibilityLabel.length) {
+      CGFloat d = fabs(CGRectGetMidX(SFFrameOnScreen(v)) - midX);
+      if (d < bestD) { bestD = d; best = v.accessibilityLabel; }
+      continue;
+    }
+    // SwiftUI draws bar titles itself; the text exists only as accessibility nodes of the host view.
+    for (id el in SFAXChildren(v)) {
+      if ([el isKindOfClass:UIView.class] || !([el accessibilityTraits] & (UIAccessibilityTraitStaticText | UIAccessibilityTraitHeader))) continue;
+      NSString *label = [el accessibilityLabel];
+      CGFloat d = fabs(CGRectGetMidX([el accessibilityFrame]) - midX);
+      if (label.length && d < bestD) { bestD = d; best = label; }
+    }
+    [queue addObjectsFromArray:v.subviews];
+  }
+  return best;
+}
+
 // The visible navigation bar's title ("Trending"), so a list isn't mistaken for the item it shows.
 static NSString *NavTitle(UIView *v) {
   if (v.hidden || v.alpha < 0.01) return nil;
-  if ([v isKindOfClass:UINavigationBar.class]) {
+  if ([v isKindOfClass:UINavigationBar.class] && v.window && CGRectIntersectsRect(SFFrameOnScreen(v), SFAppBounds())) {
     UINavigationItem *it = ((UINavigationBar *)v).topItem;
-    NSString *t = it.title.length ? it.title : ([it.titleView accessibilityLabel] ?: nil);
-    if (t.length && v.window && CGRectIntersectsRect(SFFrameOnScreen(v), SFAppBounds())) return t;
+    NSString *t = it.title.length ? it.title : [it.titleView accessibilityLabel];
+    if (t.length) return t;
+    // A custom title view (SwiftUI toolbar "principal"): the text nearest the bar's centre.
+    t = CentredText(v, CGRectGetMidX(SFFrameOnScreen(v)));
+    if (t.length) return t;
   }
   for (UIView *sub in v.subviews.reverseObjectEnumerator) { NSString *t = NavTitle(sub); if (t) return t; }
   return nil;

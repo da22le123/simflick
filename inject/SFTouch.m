@@ -136,11 +136,35 @@ static void RunPath(NSArray<NSValue *> *pts, double stepSec, void (^done)(NSStri
   dispatch_after(dispatch_time(DISPATCH_TIME_NOW, (int64_t)(stepSec * NSEC_PER_SEC)), dispatch_get_main_queue(), step);
 }
 
+// SwiftUI controls in lists ignore synthetic touches. For a SwiftUI (non-view) button or link at the tap point,
+// run its action the way VoiceOver does instead: instant, and exactly once. Main thread.
+BOOL SFActivateAt(CGPoint p, NSString **label) {
+  SFSnapshot *s = SFCollect(NO);
+  SFRefine(s);
+  SFNode *target = nil;
+  for (SFNode *n in s.nodes) if (hypot(n.tap.x - p.x, n.tap.y - p.y) < 2) { target = n; break; }
+  id src = target.source;
+  if (!src || [src isKindOfClass:UIView.class]) return NO;  // real views get a real touch
+  if (!([src accessibilityTraits] & (UIAccessibilityTraitButton | UIAccessibilityTraitLink))) return NO;
+  if (![src accessibilityActivate]) return NO;
+  if (label) *label = target.label;
+  return YES;
+}
+
 static double Q(NSDictionary *q, NSString *k, double dflt) { return q[k] ? [q[k] doubleValue] : dflt; }
 
 // Called from the server thread; blocks until the gesture finished on the main thread.
 NSData *SFHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q) {
   CFTimeInterval t0 = CACurrentMediaTime();
+  if ([path isEqualToString:@"/tap"]) {
+    CGPoint p = CGPointMake(Q(q, @"x", 0), Q(q, @"y", 0));
+    __block NSString *activated = nil;
+    dispatch_semaphore_t done = dispatch_semaphore_create(0);
+    dispatch_async(dispatch_get_main_queue(), ^{ NSString *l = nil; if (SFActivateAt(p, &l)) activated = l ?: @""; dispatch_semaphore_signal(done); });
+    if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)))
+      return [NSJSONSerialization dataWithJSONObject:@{@"ok": @NO, @"error": @"main thread busy"} options:0 error:nil];
+    if (activated) return [NSJSONSerialization dataWithJSONObject:@{@"ok": @YES, @"hit": @"", @"activated": activated, @"ms": @((CACurrentMediaTime() - t0) * 1000)} options:0 error:nil];
+  }
   NSMutableArray<NSValue *> *pts = [NSMutableArray array];
   double step = 1.0 / 60;
   if ([path isEqualToString:@"/tap"]) {

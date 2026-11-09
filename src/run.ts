@@ -67,9 +67,14 @@ function actionSpace(sc: Screen) {
   });
   for (const a of sc.scrolls) for (const dir of a.more) {
     const name = a.id ? a.id.replace(/[-_]+/g, " ") : `area ${a.ref}`;
-    const ahead = (a.ahead ?? []).filter((x) => x.dir === dir).map((x) => x.what.replace(/^ — /, ""));
+    const ahead = (a.ahead ?? []).filter((x) => x.dir === dir).map((x) => x.what.replace(/^ — | — $/g, ""));
+    // Lazy lists only build the next few rows, so the preview alone undersells a long list: say how far it goes.
+    const vertical = dir === "up" || dir === "down", span = vertical ? a.frame[3] : a.frame[2];
+    const left = dir === "down" ? a.content[1] - a.offset[1] - span : dir === "up" ? a.offset[1] : dir === "right" ? a.content[0] - a.offset[0] - span : a.offset[0];
+    const screens = span > 0 ? left / span : 0;
+    const reach = screens >= 1 ? `; about ${Math.round(screens)} more screen${Math.round(screens) === 1 ? "" : "s"} of content` : "";
     const preview = ahead.length ? `; out of view in that direction, nearest first: ${ahead.slice(0, 12).join(" | ")}` : "";
-    controls[`SCROLL_${dir.toUpperCase()}_${a.ref}`] = { kind: "scroll", ref: a.ref, dir, label: `Scroll ${name} ${dir} to reveal more content${preview}` };
+    controls[`SCROLL_${dir.toUpperCase()}_${a.ref}`] = { kind: "scroll", ref: a.ref, dir, label: `Scroll ${name} ${dir} to reveal more content${reach}${preview}` };
   }
   controls.WAIT = { kind: "wait", label: "Wait for the screen to update" };
   return { elements, targets, controls };

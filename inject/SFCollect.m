@@ -78,7 +78,7 @@ static void Consider(SFSnapshot *s, id obj, UIView *owner, CGRect frame, CGRect 
   }
 
   SFNode *n = [SFNode new];
-  n.role = role; n.label = label; n.frame = SFRound(frame); n.scrollRef = scroll.ref;
+  n.role = role; n.label = label; n.frame = SFRound(frame); n.scrollRef = scroll.ref; n.source = obj;
   n.identifier = isView ? SFNearestId(v) : ([obj respondsToSelector:@selector(accessibilityIdentifier)] ? ([obj accessibilityIdentifier] ?: @"") : @"");
   if (shown) {
     n.tap = probe.tap;
