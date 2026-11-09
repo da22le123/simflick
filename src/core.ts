@@ -17,7 +17,7 @@ export class SimflickError extends Error {
 }
 
 export const ROOT = join(dirname(fileURLToPath(import.meta.url)), "..");
-export const DYLIB = join(ROOT, "build", "simflick.dylib");
+export const DYLIB = process.env.SIMFLICK_DYLIB ?? join(ROOT, "build", "simflick.dylib");
 const STATE_DIR = join(homedir(), ".simflick");
 
 export const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));

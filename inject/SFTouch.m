@@ -1,5 +1,5 @@
-// In-process touch synthesis (KIF recipe): UITouch + IOHIDEvent via UIApplication sendEvent:.
-#import <UIKit/UIKit.h>
+// In-process touch synthesis (KIF recipe): UITouch + IOHIDEvent via UIApplication sendEvent:. POST /tap, /swipe.
+#import "SFModel.h"
 #import <dlfcn.h>
 #import <mach/mach_time.h>
 
@@ -76,12 +76,7 @@ static void Missing(NSString *sel) { if (!gMissing) gMissing = [NSMutableSet set
 
 // Topmost visible window whose hit-test claims the point, like a real finger.
 static UITouch *TouchAt(CGPoint screenPt, UIView **hitOut) {
-  NSMutableArray *ws = [NSMutableArray array];
-  for (UIScene *s in UIApplication.sharedApplication.connectedScenes)
-    if ([s isKindOfClass:UIWindowScene.class]) [ws addObjectsFromArray:((UIWindowScene *)s).windows];
-  [ws sortUsingComparator:^NSComparisonResult(UIWindow *a, UIWindow *b) { return a.windowLevel > b.windowLevel ? NSOrderedAscending : a.windowLevel < b.windowLevel ? NSOrderedDescending : NSOrderedSame; }];
-  for (UIWindow *w in ws) {
-    if (w.hidden) continue;
+  for (UIWindow *w in SFWindows().reverseObjectEnumerator) {
     CGPoint p = [w convertPoint:screenPt fromWindow:nil];
     UIView *hit = [w hitTest:p withEvent:nil];
     if (!hit) continue;
@@ -108,8 +103,7 @@ static void RunPath(NSArray<NSValue *> *pts, double stepSec, void (^done)(NSStri
   UIView *hit = nil;
   UITouch *t = TouchAt(pts.firstObject.CGPointValue, &hit);
   if (!t) { done(nil); return; }
-  NSString *hid = hit.accessibilityIdentifier ?: @"";
-  for (UIView *a = hit; !hid.length && a; a = a.superview) hid = a.accessibilityIdentifier ?: @"";
+  NSString *hid = SFNearestId(hit);
   Send(t, UITouchPhaseBegan);
   __block NSUInteger i = 1;
   __block void (^step)(void);
@@ -132,7 +126,7 @@ static void RunPath(NSArray<NSValue *> *pts, double stepSec, void (^done)(NSStri
 static double Q(NSDictionary *q, NSString *k, double dflt) { return q[k] ? [q[k] doubleValue] : dflt; }
 
 // Called from the server thread; blocks until the gesture finished on the main thread.
-NSData *SRHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q) {
+NSData *SFHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q) {
   CFTimeInterval t0 = CACurrentMediaTime();
   NSMutableArray<NSValue *> *pts = [NSMutableArray array];
   double step = 1.0 / 60;

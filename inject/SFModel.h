@@ -1,0 +1,95 @@
+// Shared types and helpers of the injected reader. Pipeline: SFCollect (walk) -> SFRefine (passes) -> SFScreenJSON.
+#import <UIKit/UIKit.h>
+
+typedef NS_ENUM(NSInteger, SFRole) {
+  SFRoleElement, SFRoleButton, SFRoleLink, SFRoleInput, SFRoleSwitch, SFRoleAdjustable, SFRoleHeader, SFRoleText, SFRoleRow,
+};
+NSString *SFRoleName(SFRole role);
+
+@interface SFScrollArea : NSObject
+@property(nonatomic, copy) NSString *ref, *identifier;   // ref = "S0", "S1"… in walk order
+@property(nonatomic) CGRect visibleFrame;
+@property(nonatomic) CGPoint offset;
+@property(nonatomic) CGSize contentSize;
+@property(nonatomic, copy) NSArray<NSString *> *more;     // directions with content left: up/down/left/right
+@property(nonatomic) BOOL paging;
+@property(nonatomic) NSInteger hiddenCount;               // elements scrolled out of view
+@property(nonatomic, copy) NSArray<NSDictionary *> *ahead; // preview of hidden elements, filled by SFRefine
+- (NSDictionary *)json;
+@end
+
+// Something to act on: on screen (tap set) or scrolled out of view inside a scroll area (direction set).
+@interface SFNode : NSObject
+@property(nonatomic) SFRole role;
+@property(nonatomic, copy) NSString *identifier, *label, *value, *context;
+@property(nonatomic) CGRect frame;          // screen points, rounded
+@property(nonatomic) CGPoint tap;
+@property(nonatomic, copy) NSString *scrollRef;
+@property(nonatomic) BOOL clipped, selected;
+@property(nonatomic, copy) NSString *direction; // hidden nodes only
+- (NSDictionary *)json;
+- (NSDictionary *)hiddenJSON;
+@end
+
+// Readable text: page text, a source of context, and a fallback tap target for gesture-only SwiftUI views.
+@interface SFText : NSObject
+@property(nonatomic, copy) NSString *label;
+@property(nonatomic) CGRect frame, visibleFrame;  // frame rounded; visibleFrame raw
+@property(nonatomic, copy) NSString *scrollRef;
+@property(nonatomic) BOOL shown, header, fromAX;
+@end
+
+// A list cell or accessibility container that may become an "open item" row.
+@interface SFRowCandidate : NSObject
+@property(nonatomic) CGRect frame;
+@property(nonatomic, copy) NSString *scrollRef;
+@property(nonatomic) BOOL axGroup;
+@end
+
+@interface SFSnapshot : NSObject
+@property(nonatomic, strong) NSArray<UIWindow *> *windows;
+@property(nonatomic, strong) NSMutableArray<SFNode *> *nodes, *hidden;
+@property(nonatomic, strong) NSMutableArray<SFText *> *texts;
+@property(nonatomic, strong) NSMutableArray<NSString *> *notes;          // extra page text lines (hints)
+@property(nonatomic, strong) NSMutableArray<SFRowCandidate *> *rowCandidates;
+@property(nonatomic, strong) NSMutableArray<SFScrollArea *> *scrolls;
+@property(nonatomic, strong) NSMutableArray<NSDictionary *> *remote, *textItems;
+@property(nonatomic, weak) UIView *focused;
+@property(nonatomic) BOOL animating, loading;
+@property(nonatomic, strong) NSMutableArray *debug;                       // rejected candidates, only with ?debug=1
+- (SFScrollArea *)scrollWithRef:(NSString *)ref;
+- (NSArray<NSString *> *)pageText;
+@end
+
+// Geometry and hit testing (SFGeometry.m).
+NSNumber *SFNum(CGFloat v);
+NSArray<NSNumber *> *SFRectJSON(CGRect r);
+NSArray<NSNumber *> *SFPointJSON(CGPoint p);
+CGRect SFRound(CGRect r);
+CGPoint SFMid(CGRect r);
+NSArray<UIWindow *> *SFWindows(void);
+UIView *SFHitView(CGPoint p, NSArray<UIWindow *> *windows);
+BOOL SFHitBelongsTo(UIView *hit, UIView *owner);
+NSString *SFNearestId(UIView *v);
+CGRect SFFrameOnScreen(UIView *v);
+
+// Classification (SFClassify.m).
+SFRole SFRoleOf(id obj);
+BOOL SFIsChartPoint(id obj);
+BOOL SFIsLoadingIndicator(UIView *v);
+BOOL SFHasWords(NSString *s);
+
+// Context text (SFContext.m).
+NSString *SFContextFor(UIView *v, NSString *own, BOOL offscreenOK);
+NSString *SFSiblingText(NSArray *siblings, id me);
+NSArray *SFAXChildren(id obj);
+
+// Pipeline.
+SFSnapshot *SFCollect(BOOL debug);
+void SFRefine(SFSnapshot *s);
+NSData *SFScreenJSON(BOOL debug);
+NSData *SFViewDump(void);
+NSData *SFHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *query);
+void SFKeyboardTrack(void);
+CGRect SFKeyboardFrame(void);
+void SFServe(void);

@@ -6,5 +6,5 @@ mkdir -p build
 SDK=$(xcrun --sdk iphonesimulator --show-sdk-path)
 clang -arch arm64 -isysroot "$SDK" -mios-simulator-version-min=16.0 -dynamiclib -fobjc-arc \
   -framework UIKit -framework Foundation -framework QuartzCore -framework CoreGraphics \
-  -o build/simflick.dylib inject/screen.m inject/actions.m
+  -o build/simflick.dylib inject/*.m
 echo "built build/simflick.dylib"
