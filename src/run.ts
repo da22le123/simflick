@@ -104,7 +104,24 @@ async function postJson(url: string, key: string, body: unknown, headers: Record
   }
 }
 
-async function choose(s: Session, sc: Screen, goal: string, history: Step[]) {
+// A plan from the caller (--steps "open Materials; swipe right ×2; exit"). Steps with ×N and a recognisable operation
+// are counted by code; the model only says whether other steps are complete. The model never decides DONE.
+export type PlanStep = { text: string; op?: string; count?: number; done: number };
+export function parsePlan(spec: string): PlanStep[] {
+  return spec.split(/\s*;\s*|\n/).map((t) => t.trim()).filter(Boolean).map((text) => {
+    const m = text.match(/(?:[×x*]\s*(\d+)|(\d+)\s*(?:×|x|times))\s*$/i);
+    const n = m ? Number(m[1] ?? m[2]) : undefined;
+    const op = /swipe\s+left/i.test(text) ? "SWIPE_LEFT" : /swipe\s+right/i.test(text) ? "SWIPE_RIGHT" : /^(tap|click|press)\b/i.test(text) ? "CLICK" : undefined;
+    return n && op ? { text, op, count: n, done: 0 } : { text, done: 0 };
+  });
+}
+function planView(plan: PlanStep[], at: number): string {
+  const rows = plan.map((p, j) => `${j < at ? "[done]" : j === at ? "[now]" : "[later]"} ${j + 1}. ${p.text}${p.count ? ` (${p.done} of ${p.count} done)` : ""}`);
+  const cur = plan[at];
+  return `Plan (do the steps in order, only the [now] step):\n${rows.join("\n")}\nNow: ${cur.text}${cur.count ? ` (${cur.count - cur.done} more to do)` : ""}`;
+}
+
+async function choose(s: Session, sc: Screen, goal: string, history: Step[], step?: string) {
   const { elements, targets, controls } = actionSpace(sc);
   const opLabels: Record<string, string> = {
     CLICK: "Tap an element: button, tab, list item, card, or text field.",
@@ -118,9 +135,11 @@ async function choose(s: Session, sc: Screen, goal: string, history: Step[]) {
   const done = (op: string) => history.filter((h) => h.kind === op).length;
   for (const op of Object.keys(targets)) operations[op] = opLabels[op] + (op.startsWith("SWIPE") && done(op) ? ` Done ${done(op)}× so far.` : "");
   for (const [k, c] of Object.entries(controls)) operations[k] = c.label;
-  operations.DONE = "Every requirement is visibly satisfied.";
+  if (!step) operations.DONE = "Every requirement is visibly satisfied.";  // with a plan, code decides when it's done
   operations.BLOCKED = "No supported operation can progress.";
   const questions: Record<string, unknown> = { operation: { type: "choice", criteria: operations, instructions: { goal, rules: NEXT_ACTION } } };
+  // Asked in the same request: is the current plan step already complete? (Count steps are ticked by code instead.)
+  if (step) questions.step_complete = { type: "choice", criteria: { YES: "The current step is complete: this screen shows its result, or recent_actions shows the action that did it.", NO: "The current step still needs an action." }, instructions: { goal, step, rules: "Answer about the [now] step only. Opening a screen is complete once that screen is shown." } };
   for (const [op, cands] of Object.entries(targets)) {
     questions[`${op.toLowerCase()}_target`] = {
       type: "choice",
@@ -161,7 +180,8 @@ async function choose(s: Session, sc: Screen, goal: string, history: Step[]) {
   // What the model saw and how it ranked the options; written to the trace for every step.
   const seen = { title: body.state.page.title, page_text: body.state.page.text, elements, operations, top_operations: top(op.probabilities, operations),
     ...(tq ? { top_targets: top(res.answers[`${op.choice.toLowerCase()}_target`].probabilities, tq.criteria) } : {}) };
-  return { operation: op.choice, target, control: controls[op.choice], p, decide_ms, model: res.model as string, seen };
+  const stepDone = step ? validChoice(res.answers?.step_complete, ["YES", "NO"]).choice === "YES" : false;
+  return { operation: op.choice, target, control: controls[op.choice], p, decide_ms, model: res.model as string, seen, stepDone };
 }
 
 // Text for TYPE_TEXT: any OpenAI-compatible endpoint (TEXT_MODEL_*), else Anthropic Haiku.
@@ -207,9 +227,9 @@ async function fieldText(goal: string, field: El, sc: Screen, history: Step[]): 
 }
 
 // Trace = what was actually on screen after each step; checks read this, not the model's DONE.
-type TraceEntry = { step: number; operation: string; action: string; text: string[]; ids: string[]; screen?: Screen; seen?: unknown; at?: { start: number; decided: number; done: number } };
+type TraceEntry = { step: number; operation: string; action: string; text: string[]; ids: string[]; screen?: Screen; seen?: unknown; at?: { start: number; decided: number; done: number }; plan?: unknown };
 
-export type RunOpts = { maxSteps?: number; fullTrace?: boolean; shot?: boolean; never?: string[] };
+export type RunOpts = { maxSteps?: number; fullTrace?: boolean; shot?: boolean; never?: string[]; steps?: string };
 
 export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise<"done" | "blocked"> {
   const maxSteps = opts.maxSteps ?? 60;
@@ -238,13 +258,27 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
     console.log(`trace: ${file}${shot ? `\nscreenshot: ${shot}` : ""}`);
   };
   let stale = 0, secondLook = false;
+  const plan = opts.steps ? parsePlan(opts.steps) : [];
+  let at = 0;
+  const planState = () => plan.map((p, j) => ({ text: p.text, complete: j < at, ...(p.count ? { done: p.done, of: p.count } : {}) }));
   for (let n = 1; n <= maxSteps; n++) {
     // Decide on a read that includes lazy lists' unbuilt rows; change detection keeps using normal reads.
     // (A system alert screen comes from axe and has nothing to scan.)
     const alert = sc.active !== undefined && !sc.active;
     const view = alert ? sc : await get<Screen>(s, "/screen?scan=1").catch(() => sc);
     const tStart = Math.round(performance.now() - t0);
-    const d = await choose(s, view, goal, history);
+    const cur = plan[at];
+    const d = await choose(s, view, plan.length ? `${goal}\n\n${planView(plan, at)}` : goal, history, cur && !cur.count ? cur.text : undefined);
+    // Plan step complete (model's word for non-count steps): tick it and decide again for the next one.
+    if (cur && !cur.count && d.stepDone) {
+      at++;
+      console.log(`   ✓ step ${at}/${plan.length}: ${cur.text}`);
+      trace.push({ step: n, operation: "STEP", action: cur.text, ...snap(sc), plan: planState() });
+      progress();
+      if (at === plan.length) { console.log(`done: all ${plan.length} steps in ${((performance.now() - t0) / 1000).toFixed(1)} s`); await flush("done"); return "done"; }
+      n--;
+      continue;
+    }
     const tDecided = Math.round(performance.now() - t0);
     const label = d.target?.kind === "textitem" ? `text "${d.target.label}"` : d.target ? `${describe(d.target as El)}${"dir" in d.target ? ` (was out of view, ${d.target.dir})` : ""}${d.target.context ? ` — ${d.target.context}` : ""}` : (d.control?.label ?? d.operation).split(";")[0];
     // DONE/BLOCKED end the run: take a second look first (a card between animations, a page still filling in).
@@ -297,10 +331,16 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
     secondLook = false;
     const step: Step = { step: n, action: label, kind: d.operation, text, page_changed: keyOf(sc) !== before, decide_ms: d.decide_ms, act_ms: Math.round(performance.now() - a0), p: d.p };
     history.push(step);
-    trace.push({ step: n, operation: d.operation, action: label, ...snap(sc), seen: d.seen, at: { start: tStart, decided: tDecided, done: Math.round(performance.now() - t0) } });
+    trace.push({ step: n, operation: d.operation, action: label, ...snap(sc), seen: d.seen, at: { start: tStart, decided: tDecided, done: Math.round(performance.now() - t0) }, ...(plan.length ? { plan: planState() } : {}) });
     progress();
+    if (plan.length && at === plan.length) { console.log(`done: all ${plan.length} steps in ${((performance.now() - t0) / 1000).toFixed(1)} s`); await flush("done"); return "done"; }
     const fb = d.operation === "CLICK" ? (d.target && "system" in d.target && d.target.system ? ", system alert via axe" : lastTapFellBack ? ", axe fallback" : "") : "";
     console.log(`${String(n).padStart(2)} ${d.operation.padEnd(9)} ${label}${text ? ` <- ${JSON.stringify(text)}` : ""}  (decide ${step.decide_ms} ms, act ${step.act_ms} ms, p=${d.p.toFixed(2)}${fb}${step.page_changed ? "" : ", NO CHANGE"})`);
+    const now = plan[at];
+    if (now?.count && d.operation === now.op && step.page_changed) {  // only an action that took effect counts
+      now.done++;
+      if (now.done >= now.count) { at++; console.log(`   ✓ step ${at}/${plan.length}: ${now.text}`); }
+    }
     const waits = history.slice(-4);
     if (waits.length === 4 && waits.every((h) => h.kind === "WAIT" && !h.page_changed)) {
       console.log("blocked: waited 4 times and nothing changed");
