@@ -14,7 +14,8 @@ If the thing the current part of the goal needs is not visible yet and a scroll 
 Do not toggle a switch or checkbox already in the requested state.
 WAIT only when the needed control is absent or results are still loading. Recent WAIT actions are not evidence of loading.
 DONE requires that ALL requirements are satisfied. An earlier part counts as done only if recent_actions shows the action
-that performed it (e.g. "open a post" needs a CLICK on a post); the final part needs visible evidence on this screen.
+that performed it (e.g. "open a post" needs a CLICK on a post); the final part needs visible evidence on this screen. A save/like/bookmark/follow/toggle counts only if its control now shows the
+new state (e.g. "Saved", "Remove from saved"); if it still offers the original action, the tap did not land: do it again.
 If a part was skipped, go back and do it instead of DONE.
 Never restart parts that recent_actions already shows done. BLOCKED means no supported operation can make progress.`;
 
@@ -116,7 +117,7 @@ async function choose(s: Session, sc: Screen, goal: string, history: Step[]) {
   const body = {
     model: process.env.TYPESAFE_MODEL ?? "jev-latest",
     state: {
-      page: { url: `app://${s.bundleId}`, title: sc.text[0] ?? "", text: `${remote ? remote + "\n" : ""}${kb}\n${sc.text.join("\n")}`.slice(0, 6000) },
+      page: { url: `app://${s.bundleId}`, title: sc.title || sc.text[0] || "", text: `${remote ? remote + "\n" : ""}${kb}\n${sc.text.join("\n")}`.slice(0, 6000) },
       elements,
       // Jev sends 10; multi-part goals need the whole (compact) history to know which parts are done.
       recent_actions: history.slice(-40).map(({ action, kind, text, page_changed }) => ({ action, kind, text, page_changed })),
@@ -135,13 +136,20 @@ async function choose(s: Session, sc: Screen, goal: string, history: Step[]) {
     target = targets[op.choice][t.choice];
     p = t.probabilities[t.choice];
   }
-  return { operation: op.choice, target, control: controls[op.choice], p, decide_ms, model: res.model as string };
+  const top = (probs: Record<string, number>, names: Record<string, unknown>) => Object.entries(probs).sort((a, b) => b[1] - a[1]).slice(0, 5)
+    .map(([k, v]) => ({ choice: k, p: +v.toFixed(3), label: typeof names[k] === "string" ? (names[k] as string).slice(0, 80) : (names[k] as { element?: string })?.element }));
+  const tq = questions[`${op.choice.toLowerCase()}_target`] as { criteria: Record<string, unknown> } | undefined;
+  // What the model saw and how it ranked the options; written to the trace for every step.
+  const seen = { title: body.state.page.title, page_text: body.state.page.text, elements, operations, top_operations: top(op.probabilities, operations),
+    ...(tq ? { top_targets: top(res.answers[`${op.choice.toLowerCase()}_target`].probabilities, tq.criteria) } : {}) };
+  return { operation: op.choice, target, control: controls[op.choice], p, decide_ms, model: res.model as string, seen };
 }
 
 // Text for TYPE_TEXT: any OpenAI-compatible endpoint (TEXT_MODEL_*), else Anthropic Haiku.
 // Without a text model: the values to type must be quoted in the goal; TypeSafe picks which one fits this field.
 async function quotedValue(goal: string, field: El, sc: Screen, history: Step[]): Promise<string> {
-  const quoted = [...goal.matchAll(/["“”']([^"“”']{1,500})["“”']/g)].map((m) => m[1]);
+  // A ' only quotes at word edges, so "don't" isn't an opening quote.
+  const quoted = [...goal.matchAll(/["“”]([^"“”]{1,500})["“”]|(?<![\p{L}\p{N}])['‘]([^'‘’]{1,500}?)['’](?![\p{L}\p{N}])/gu)].map((m) => m[1] ?? m[2]);
   const values = [...new Set(quoted)];
   if (!values.length) throw new SimflickError('TYPE_TEXT needs a quoted value in the goal (e.g. search "cats") or a text model key; nothing typed');
   if (values.length === 1) return values[0];
@@ -180,7 +188,7 @@ async function fieldText(goal: string, field: El, sc: Screen, history: Step[]): 
 }
 
 // Trace = what was actually on screen after each step; checks read this, not the model's DONE.
-type TraceEntry = { step: number; operation: string; action: string; text: string[]; ids: string[]; screen?: Screen };
+type TraceEntry = { step: number; operation: string; action: string; text: string[]; ids: string[]; screen?: Screen; seen?: unknown };
 
 export type RunOpts = { maxSteps?: number; fullTrace?: boolean; shot?: boolean; never?: string[] };
 
@@ -208,11 +216,13 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
     writeFileSync(file, JSON.stringify({ goal, result, ...(shot ? { screenshot: shot } : {}), trace }, null, 1));
     console.log(`trace: ${file}${shot ? `\nscreenshot: ${shot}` : ""}`);
   };
+  let stale = 0;
   for (let n = 1; n <= maxSteps; n++) {
     const d = await choose(s, sc, goal, history);
     const label = d.target?.kind === "textitem" ? `text "${d.target.label}"` : d.target ? `${describe(d.target as El)}${"dir" in d.target ? ` (was out of view, ${d.target.dir})` : ""}${d.target.context ? ` — ${d.target.context}` : ""}` : (d.control?.label ?? d.operation).split(";")[0];
     if (d.operation === "DONE" || d.operation === "BLOCKED") {
       console.log(`${String(n).padStart(2)} ${d.operation}  (decide ${d.decide_ms} ms, p=${d.p.toFixed(2)}, ${d.model})`);
+      trace.push({ step: n, operation: d.operation, action: "", ...snap(sc), seen: d.seen });
       console.log(`${d.operation.toLowerCase()} after ${history.length} actions in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
       await flush(d.operation.toLowerCase());
       return d.operation === "DONE" ? "done" : "blocked";
@@ -236,17 +246,28 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
     } catch (e) {
       // A stale target is not fatal: re-observe and decide again, as Jev does.
       // Stale targets (2) and typing that didn't fully land (3) are recoverable: re-observe and decide again.
+      if (e instanceof SimflickError && (e.code === 2 || e.code === 3) && ++stale >= 3) {
+        console.log(`blocked: ${e.message} (3 retries in a row)`);
+        await flush("blocked");
+        return "blocked";
+      }
       if (e instanceof SimflickError && (e.code === 2 || e.code === 3)) { console.log(`${String(n).padStart(2)} ${e.code === 2 ? "stale" : "typing"}: ${e.message}; re-reading`); sc = await settled(s); continue; }
       throw e;
     }
+    stale = 0;
     const step: Step = { step: n, action: label, kind: d.operation, text, page_changed: keyOf(sc) !== before, decide_ms: d.decide_ms, act_ms: Math.round(performance.now() - a0), p: d.p };
     history.push(step);
-    trace.push({ step: n, operation: d.operation, action: label, ...snap(sc) });
+    trace.push({ step: n, operation: d.operation, action: label, ...snap(sc), seen: d.seen });
     const fb = d.operation === "CLICK" ? (d.target && "system" in d.target && d.target.system ? ", system alert via axe" : lastTapFellBack ? ", axe fallback" : "") : "";
     console.log(`${String(n).padStart(2)} ${d.operation.padEnd(9)} ${label}${text ? ` <- ${JSON.stringify(text)}` : ""}  (decide ${step.decide_ms} ms, act ${step.act_ms} ms, p=${d.p.toFixed(2)}${fb}${step.page_changed ? "" : ", NO CHANGE"})`);
     const waits = history.slice(-4);
     if (waits.length === 4 && waits.every((h) => h.kind === "WAIT" && !h.page_changed)) {
       console.log("blocked: waited 4 times and nothing changed");
+      await flush("blocked");
+      return "blocked";
+    }
+    if (text !== undefined && history.filter((h) => h.kind === "TYPE_TEXT" && h.text === text).length >= 3) {
+      console.log(`blocked: typed ${JSON.stringify(text)} 3 times`);
       await flush("blocked");
       return "blocked";
     }

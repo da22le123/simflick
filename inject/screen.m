@@ -33,8 +33,22 @@ static UIView *HitAt(CGPoint p, NSArray<UIWindow *> *windows) {
   return nil;
 }
 
+// The visible navigation bar's title ("Trending"), so a list isn't mistaken for the item it shows.
+static NSString *NavTitle(UIView *v) {
+  if (v.hidden || v.alpha < 0.01) return nil;
+  if ([v isKindOfClass:UINavigationBar.class]) {
+    UINavigationItem *it = ((UINavigationBar *)v).topItem;
+    NSString *t = it.title.length ? it.title : ([it.titleView accessibilityLabel] ?: nil);
+    if (t.length && v.window && CGRectIntersectsRect([v convertRect:v.bounds toView:nil], UIScreen.mainScreen.bounds)) return t;
+  }
+  for (UIView *sub in v.subviews.reverseObjectEnumerator) { NSString *t = NavTitle(sub); if (t) return t; }
+  return nil;
+}
+
 static NSString *Kind(id v) {
-  if ([v conformsToProtocol:@protocol(UITextInput)]) return @"input";
+  // Web views and read-only text views adopt UITextInput too, but you can't type into them.
+  BOOL editable = !([v isKindOfClass:UITextView.class] && !((UITextView *)v).editable) && ![NSStringFromClass([v class]) hasPrefix:@"WK"];
+  if (editable && [v conformsToProtocol:@protocol(UITextInput)]) return @"input";
   UIAccessibilityTraits t = [v accessibilityTraits];
   if (t & UIAccessibilityTraitButton) return @"button";
   if (t & UIAccessibilityTraitLink) return @"link";
@@ -229,6 +243,7 @@ static void Walk(UIView *v, CGRect clip, NSDictionary *scroll, Ctx *c) {
   if (v.layer.animationKeys.count && !CGRectIsEmpty(vis)) c->animating = YES;
   // A visible spinner means content is still arriving (network); settle should keep waiting.
   if (!CGRectIsEmpty(vis) && [v isKindOfClass:UIActivityIndicatorView.class] && ((UIActivityIndicatorView *)v).isAnimating) c->loading = YES;
+  if (!CGRectIsEmpty(vis) && [NSStringFromClass(v.class) isEqualToString:@"WKWebView"] && [v respondsToSelector:@selector(isLoading)] && ((BOOL (*)(id, SEL))objc_msgSend)(v, @selector(isLoading))) c->loading = YES;
 
   // Content drawn by another process (Safari sheets, web sign-in, some system UI) is opaque to us and to axe.
   if ([NSStringFromClass(v.class) isEqualToString:@"_UIRemoteView"] && !CGRectIsEmpty(vis)) {
@@ -442,6 +457,41 @@ static NSData *Screen(void) {
     c.ahead[s[@"ref"]] = ahead;
   }
   for (NSMutableDictionary *s in c.scrolls) { s[@"hiddenItems"] = c.hiddenIn[s[@"ref"]] ?: @0; s[@"ahead"] = c.ahead[s[@"ref"]] ?: @[]; }
+  // A pushed screen often hides the tab bar; say where its tabs went, or "Saved tab" looks unreachable.
+  for (UIWindow *w in c.windows) {
+    NSMutableArray *q = [NSMutableArray arrayWithObjects:w.rootViewController, nil];
+    for (NSUInteger i = 0; i < q.count && i < 50; i++) {
+      UIViewController *vc = q[i];
+      [q addObjectsFromArray:vc.childViewControllers];
+      if (vc.presentedViewController) [q addObject:vc.presentedViewController];
+      if (![vc isKindOfClass:UITabBarController.class]) continue;
+      UITabBar *bar = ((UITabBarController *)vc).tabBar;
+      CGRect f = bar.window ? [bar convertRect:bar.bounds toView:nil] : CGRectNull;
+      BOOL shown = bar.window && !bar.hidden && bar.alpha > 0.01 && CGRectIntersectsRect(f, UIScreen.mainScreen.bounds);
+      if (shown) continue;
+      NSMutableArray *names = [NSMutableArray array];
+      for (UITabBarItem *it in bar.items) if (it.title.length) [names addObject:it.title];
+      if (names.count) [c.texts addObject:[NSString stringWithFormat:@"(Tab bar with %@ is hidden on this screen; go Back to reach it.)", [names componentsJoinedByString:@", "]]];
+      break;
+    }
+  }
+  // One control often shows up as its view, an inner AX element and a row: same id + overlapping frames = one entry.
+  NSMutableArray *uniq = [NSMutableArray array];
+  int (^rank)(NSDictionary *) = ^int(NSDictionary *x) {
+    return ([x[@"kind"] isEqualToString:@"row"] ? 0 : 4) + ([x[@"kind"] isEqualToString:@"button"] ? 2 : 0) + ([x[@"label"] length] ? 1 : 0);
+  };
+  for (NSDictionary *e in c.els) {
+    NSUInteger dup = NSNotFound;
+    if ([e[@"id"] length]) for (NSUInteger j = 0; j < uniq.count && dup == NSNotFound; j++) {
+      NSArray *f = e[@"frame"], *g = uniq[j][@"frame"];
+      CGRect a = CGRectMake([f[0] doubleValue], [f[1] doubleValue], [f[2] doubleValue], [f[3] doubleValue]);
+      CGRect b = CGRectMake([g[0] doubleValue], [g[1] doubleValue], [g[2] doubleValue], [g[3] doubleValue]);
+      if ([uniq[j][@"id"] isEqualToString:e[@"id"]] && CGRectIntersectsRect(a, b)) dup = j;
+    }
+    if (dup == NSNotFound) [uniq addObject:e];
+    else if (rank(e) > rank(uniq[dup])) uniq[dup] = e;
+  }
+  c.els = uniq;
   CGRect sb = UIScreen.mainScreen.bounds;
   NSMutableDictionary *kb = [@{@"open": @(!CGRectIsEmpty(CGRectIntersection(gKeyboard, sb)))} mutableCopy];
   if ([kb[@"open"] boolValue]) kb[@"frame"] = R(CGRectIntersection(gKeyboard, sb));
@@ -450,7 +500,9 @@ static NSData *Screen(void) {
     if ([c.focused conformsToProtocol:@protocol(UITextInputTraits)] && [c.focused respondsToSelector:@selector(returnKeyType)])
       kb[@"returnKey"] = @[@"default", @"go", @"google", @"join", @"next", @"route", @"search", @"send", @"yahoo", @"done", @"emergencyCall", @"continue"][MIN((NSInteger)[(id<UITextInputTraits>)c.focused returnKeyType], 11)];
   }
-  NSDictionary *out = @{@"screen": @[@(sb.size.width), @(sb.size.height)], @"windows": wnames,
+  NSString *title = nil;
+  for (UIWindow *w in c.windows.reverseObjectEnumerator) if ((title = NavTitle(w))) break;
+  NSDictionary *out = @{@"title": title ?: @"", @"screen": @[@(sb.size.width), @(sb.size.height)], @"windows": wnames,
                         @"keyboard": kb, @"active": @(UIApplication.sharedApplication.applicationState == UIApplicationStateActive), @"animating": @(c.animating), @"loading": @(c.loading), @"elements": c.els, @"textItems": textItems, @"hidden": c.hidden, @"remote": c.remote, @"text": c.texts, @"scrolls": c.scrolls, @"ms": @((CACurrentMediaTime() - t0) * 1000)};
   return [NSJSONSerialization dataWithJSONObject:out options:0 error:nil];
 }
