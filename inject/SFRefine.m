@@ -47,9 +47,12 @@ static void NearestTextContext(SFSnapshot *s) {
 static int Richness(SFNode *n) {
   return (n.role == SFRoleInput ? 8 : 0) + (n.label.length ? 2 : 0) + (n.identifier.length ? 1 : 0) + (n.value.length ? 1 : 0);
 }
+static BOOL FromWeb(SFNode *n) { return [n.source isKindOfClass:SFWebTarget.class]; }
+
 static void MergeSamePlaceIn(NSMutableArray<SFNode *> *nodes) {
   NSMutableArray<SFNode *> *merged = [NSMutableArray array];
   for (SFNode *n in nodes) {
+    if (FromWeb(n)) { [merged addObject:n]; continue; }  // the page says exactly what its links are
     NSInteger dup = NSNotFound;
     for (NSUInteger j = 0; j < merged.count && dup == NSNotFound; j++) {
       CGRect f = n.frame, g = merged[j].frame;
@@ -128,7 +131,7 @@ static void ContainersToRows(SFSnapshot *s) {
   NSArray<SFNode *> *nodes = [s.nodes copy];
   NSMutableArray<void (^)(void)> *changes = [NSMutableArray array];  // applied after all decisions, so they don't feed each other
   for (SFNode *n in nodes) {
-    if (n.role == SFRoleRow || n.role == SFRoleInput) continue;
+    if (n.role == SFRoleRow || n.role == SFRoleInput || FromWeb(n)) continue;  // a link wrapping lines isn't a container
     NSMutableArray<SFNode *> *inner = [NSMutableArray array];
     for (SFNode *o in nodes)  // same scroll area: not e.g. a tab bar
       if (o != n && CGRectContainsRect(CGRectInset(n.frame, -1, -1), o.frame) && !CGRectEqualToRect(o.frame, n.frame) && SameScroll(o.scrollRef, n.scrollRef))
@@ -150,7 +153,7 @@ static void ContainersToRows(SFSnapshot *s) {
 // Not RN: tappable RN text is exposed as a button already.
 static void TextItems(SFSnapshot *s) {
   for (SFText *t in s.texts) {
-    if (!t.shown || t.header || t.reactNative) continue;
+    if (!t.shown || t.header || t.noTapTarget) continue;
     CGPoint mid = SFMid(t.visibleFrame); BOOL covered = NO;
     for (SFNode *n in s.nodes) if (n.role != SFRoleRow && CGRectContainsPoint(n.frame, mid)) { covered = YES; break; }
     if (covered || s.textItems.count >= kSFMaxTextItems) continue;

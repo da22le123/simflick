@@ -40,10 +40,16 @@ NSString *SFRoleName(SFRole role);
 @property(nonatomic, copy) NSString *label;
 @property(nonatomic) CGRect frame, visibleFrame;  // frame rounded; visibleFrame raw
 @property(nonatomic, copy) NSString *scrollRef;
-@property(nonatomic) BOOL shown, header, reactNative;
+@property(nonatomic) BOOL shown, header, noTapTarget;  // noTapTarget: RN / web text, never offered as a text item
 @property(nonatomic, copy) NSString *direction;  // scrolled out of view: which way
 @property(nonatomic, weak) id owner;            // the button this text is part of (tapping the text = tapping it)
 @property(nonatomic, copy) NSString *ownerLabel;
+@end
+
+// A link/button inside a web page, clicked by script (index into the page's last read).
+@interface SFWebTarget : NSObject
+@property(nonatomic, weak) UIView *webView;
+@property(nonatomic) NSInteger index;
 @end
 
 // A list cell or accessibility container that may become an "open item" row.
@@ -61,6 +67,8 @@ NSString *SFRoleName(SFRole role);
 @property(nonatomic, strong) NSMutableArray<SFRowCandidate *> *rowCandidates;
 @property(nonatomic, strong) NSMutableArray<SFScrollArea *> *scrolls;
 @property(nonatomic, strong) NSMutableArray<NSDictionary *> *remote, *textItems;
+@property(nonatomic, strong) NSMutableArray<UIView *> *webViews;          // visible WKWebViews, read after the walk
+@property(nonatomic, strong) NSMutableArray<SFWebTarget *> *webTargets;   // keeps web nodes' sources alive
 @property(nonatomic, weak) UIView *focused;
 @property(nonatomic) BOOL animating, loading;
 @property(nonatomic, strong) NSMutableArray *debug;                       // rejected candidates, only with ?debug=1
@@ -100,6 +108,8 @@ NSArray *SFAXChildren(id obj);
 SFSnapshot *SFCollect(BOOL debug);
 void SFRefine(SFSnapshot *s);
 void SFScanLists(SFSnapshot *s);
+void SFReadWebViews(SFSnapshot *s);
+BOOL SFWebClick(SFWebTarget *target);
 NSData *SFScreenJSON(BOOL debug, BOOL scan);
 NSData *SFViewDump(void);
 NSData *SFHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *query);

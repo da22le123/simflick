@@ -196,7 +196,7 @@ async function fieldText(goal: string, field: El, sc: Screen, history: Step[]): 
 }
 
 // Trace = what was actually on screen after each step; checks read this, not the model's DONE.
-type TraceEntry = { step: number; operation: string; action: string; text: string[]; ids: string[]; screen?: Screen; seen?: unknown };
+type TraceEntry = { step: number; operation: string; action: string; text: string[]; ids: string[]; screen?: Screen; seen?: unknown; at?: { start: number; decided: number; done: number } };
 
 export type RunOpts = { maxSteps?: number; fullTrace?: boolean; shot?: boolean; never?: string[] };
 
@@ -207,7 +207,7 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
   const snap = (sc: Screen) => ({ text: sc.text, ids: sc.elements.map((e) => e.id).filter(Boolean), ...(opts.fullTrace ? { screen: sc } : {}) });
   const history: Step[] = [];
   const trace: TraceEntry[] = [];
-  const t0 = performance.now();
+  const t0 = performance.now(), startedAt = Date.now();  // startedAt: wall clock, to line the trace up with a screen recording
   let sc = await settled(s);
   trace.push({ step: 0, operation: "START", action: "", ...snap(sc) });
   const dir = join(homedir(), ".simflick", "runs");
@@ -221,7 +221,7 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
       shot = file.replace(/\.json$/, ".png");
       execFileSync("xcrun", ["simctl", "io", s.udid, "screenshot", shot], { stdio: "ignore" });
     }
-    writeFileSync(file, JSON.stringify({ goal, result, ...(shot ? { screenshot: shot } : {}), trace }, null, 1));
+    writeFileSync(file, JSON.stringify({ goal, result, startedAt, ...(shot ? { screenshot: shot } : {}), trace }, null, 1));
     console.log(`trace: ${file}${shot ? `\nscreenshot: ${shot}` : ""}`);
   };
   let stale = 0;
@@ -230,11 +230,13 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
     // (A system alert screen comes from axe and has nothing to scan.)
     const alert = sc.active !== undefined && !sc.active;
     const view = alert ? sc : await get<Screen>(s, "/screen?scan=1").catch(() => sc);
+    const tStart = Math.round(performance.now() - t0);
     const d = await choose(s, view, goal, history);
+    const tDecided = Math.round(performance.now() - t0);
     const label = d.target?.kind === "textitem" ? `text "${d.target.label}"` : d.target ? `${describe(d.target as El)}${"dir" in d.target ? ` (was out of view, ${d.target.dir})` : ""}${d.target.context ? ` — ${d.target.context}` : ""}` : (d.control?.label ?? d.operation).split(";")[0];
     if (d.operation === "DONE" || d.operation === "BLOCKED") {
       console.log(`${String(n).padStart(2)} ${d.operation}  (decide ${d.decide_ms} ms, p=${d.p.toFixed(2)}, ${d.model})`);
-      trace.push({ step: n, operation: d.operation, action: "", ...snap(sc), seen: d.seen });
+      trace.push({ step: n, operation: d.operation, action: "", ...snap(sc), seen: d.seen, at: { start: tStart, decided: tDecided, done: tDecided } });
       console.log(`${d.operation.toLowerCase()} after ${history.length} actions in ${((performance.now() - t0) / 1000).toFixed(1)} s`);
       await flush(d.operation.toLowerCase());
       return d.operation === "DONE" ? "done" : "blocked";
@@ -269,7 +271,7 @@ export async function run(s: Session, goal: string, opts: RunOpts = {}): Promise
     stale = 0;
     const step: Step = { step: n, action: label, kind: d.operation, text, page_changed: keyOf(sc) !== before, decide_ms: d.decide_ms, act_ms: Math.round(performance.now() - a0), p: d.p };
     history.push(step);
-    trace.push({ step: n, operation: d.operation, action: label, ...snap(sc), seen: d.seen });
+    trace.push({ step: n, operation: d.operation, action: label, ...snap(sc), seen: d.seen, at: { start: tStart, decided: tDecided, done: Math.round(performance.now() - t0) } });
     const fb = d.operation === "CLICK" ? (d.target && "system" in d.target && d.target.system ? ", system alert via axe" : lastTapFellBack ? ", axe fallback" : "") : "";
     console.log(`${String(n).padStart(2)} ${d.operation.padEnd(9)} ${label}${text ? ` <- ${JSON.stringify(text)}` : ""}  (decide ${step.decide_ms} ms, act ${step.act_ms} ms, p=${d.p.toFixed(2)}${fb}${step.page_changed ? "" : ", NO CHANGE"})`);
     const waits = history.slice(-4);

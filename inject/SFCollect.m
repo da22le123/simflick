@@ -172,6 +172,10 @@ static void Walk(SFSnapshot *s, UIView *v, CGRect clip, SFScrollArea *scroll) {
   // Core Animation moves layers while views already report final frames; flag it so callers keep waiting.
   if (onScreen && IsTransitioning(v.layer)) s.animating = YES;
   if (onScreen && SFIsLoadingIndicator(v)) s.loading = YES;
+  static Class web;
+  if (!web) web = NSClassFromString(@"WKWebView");
+  BOOL isWeb = web && [v isKindOfClass:web];
+  if (isWeb && onScreen) [s.webViews addObject:v];  // its page is read by script after the walk (SFWeb.m)
 
   // Content drawn by another process (Safari sheets, web sign-in, some system UI) is opaque to us and to axe.
   // _UIRemoteView (older) and _UISceneHostingView (share sheet, iOS 17+) host another process's UI.
@@ -203,10 +207,10 @@ static void Walk(SFSnapshot *s, UIView *v, CGRect clip, SFScrollArea *scroll) {
   if (SFIsRNText(v)) {
     if (onScreen && vis.size.height >= 4 && v.accessibilityLabel.length && SFHitBelongsTo(SFHitView(SFMid(vis), s.windows), v)) {
       SFText *t = [SFText new];
-      t.label = v.accessibilityLabel; t.frame = SFRound(frame); t.visibleFrame = vis; t.shown = YES; t.reactNative = YES;
+      t.label = v.accessibilityLabel; t.frame = SFRound(frame); t.visibleFrame = vis; t.shown = YES; t.noTapTarget = YES;
       [s.texts addObject:t];
     }
-  } else if (v.isAccessibilityElement || [v conformsToProtocol:@protocol(UITextInput)]) Consider(s, v, v, frame, vis, mine, nil);
+  } else if (!isWeb && (v.isAccessibilityElement || [v conformsToProtocol:@protocol(UITextInput)])) Consider(s, v, v, frame, vis, mine, nil);
   // SwiftUI (and some UIKit containers) describe content as accessibility elements that are not views.
   // RN views are fully covered by the view walk (text included); skipping their AX children keeps reads fast.
   NSArray *axKids = [NSStringFromClass(v.class) hasPrefix:@"RCT"] ? @[] : SFAXChildren(v);
@@ -225,5 +229,6 @@ SFSnapshot *SFCollect(BOOL debug) {
     if (!CGRectIsEmpty(CGRectIntersection(kb, clip))) clip.size.height = MAX(0, CGRectGetMinY(kb) - clip.origin.y);
     Walk(s, w, clip, nil);
   }
+  SFReadWebViews(s);
   return s;
 }

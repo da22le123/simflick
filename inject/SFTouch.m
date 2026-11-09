@@ -149,6 +149,10 @@ BOOL SFActivateAt(CGPoint p, NSString **label) {
       if (t.shown && t.owner && hypot(SFMid(t.visibleFrame).x - p.x, SFMid(t.visibleFrame).y - p.y) < 2) { src = t.owner; break; }
     if (src && label) *label = @"(text in a button)";
   }
+  if ([src isKindOfClass:SFWebTarget.class]) {
+    if (label) *label = target.label;
+    return SFWebClick(src);
+  }
   if (!src || [src isKindOfClass:UIView.class]) return NO;  // real views get a real touch
   if (!([src accessibilityTraits] & (UIAccessibilityTraitButton | UIAccessibilityTraitLink))) return NO;
   if (![src accessibilityActivate]) return NO;

@@ -52,6 +52,7 @@ NSString *SFRoleName(SFRole role) {
     _nodes = [NSMutableArray array]; _hidden = [NSMutableArray array]; _covered = [NSMutableArray array]; _texts = [NSMutableArray array];
     _notes = [NSMutableArray array]; _rowCandidates = [NSMutableArray array]; _scrolls = [NSMutableArray array];
     _remote = [NSMutableArray array]; _textItems = [NSMutableArray array];
+    _webViews = [NSMutableArray array]; _webTargets = [NSMutableArray array];
   }
   return self;
 }
