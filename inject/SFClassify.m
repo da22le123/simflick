@@ -41,6 +41,16 @@ BOOL SFIsChartPoint(id obj) {
   return NO;
 }
 
+// The button an element is part of (SwiftUI: text inside a post's or a name's button), via its accessibility parents.
+id SFOwningButton(id obj) {
+  id c = obj;
+  for (int i = 0; i < 4 && [c respondsToSelector:@selector(accessibilityContainer)] && (c = [c accessibilityContainer]); i++) {
+    if ([c isKindOfClass:UIView.class] && ![c isAccessibilityElement]) continue;  // plain container views
+    if ([c accessibilityTraits] & (UIAccessibilityTraitButton | UIAccessibilityTraitLink)) return c;
+  }
+  return nil;
+}
+
 // Progress bars, spinners, timers: they update by themselves and can't be acted on.
 BOOL SFIsStatus(id obj) {
   if ([obj isKindOfClass:UIActivityIndicatorView.class] || [obj isKindOfClass:UIProgressView.class]) return YES;

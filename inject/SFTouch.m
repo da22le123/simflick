@@ -144,6 +144,11 @@ BOOL SFActivateAt(CGPoint p, NSString **label) {
   SFNode *target = nil;
   for (SFNode *n in s.nodes) if (hypot(n.tap.x - p.x, n.tap.y - p.y) < 2) { target = n; break; }
   id src = target.source;
+  if (!target) {  // a text item: tapping text inside a button means tapping that button
+    for (SFText *t in s.texts)
+      if (t.shown && t.owner && hypot(SFMid(t.visibleFrame).x - p.x, SFMid(t.visibleFrame).y - p.y) < 2) { src = t.owner; break; }
+    if (src && label) *label = @"(text in a button)";
+  }
   if (!src || [src isKindOfClass:UIView.class]) return NO;  // real views get a real touch
   if (!([src accessibilityTraits] & (UIAccessibilityTraitButton | UIAccessibilityTraitLink))) return NO;
   if (![src accessibilityActivate]) return NO;

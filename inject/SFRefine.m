@@ -77,7 +77,8 @@ static void DropRedundantContext(SFSnapshot *s) {
 
 // Label from what's inside: visible text first, then each inner element's label and context, at most 3 phrases.
 static NSString *RowLabel(NSArray<NSString *> *texts, NSArray<SFNode *> *inner) {
-  NSMutableArray *words = [NSMutableArray arrayWithArray:texts];
+  NSMutableArray *words = [NSMutableArray array];
+  for (NSString *t in texts) if (words.count < kSFRowLabelPhrases) AddWord(words, t);  // not counters ("4", "70")
   for (SFNode *n in inner) if (words.count < kSFRowLabelPhrases) { AddWord(words, n.label ?: @""); AddWord(words, n.context ?: @""); }
   return Clip([words componentsJoinedByString:@" · "], kSFRowLabelChars);
 }
@@ -115,6 +116,8 @@ static void RowsFromCells(SFSnapshot *s) {
     if (redundant || !label.length || !RowTap(s, cf, cell.scrollRef, inner, SFMid(cf), &tap)) continue;
     SFNode *row = [SFNode new];
     row.role = SFRoleRow; row.identifier = @""; row.label = label; row.frame = SFRound(cf); row.tap = tap; row.scrollRef = cell.scrollRef;
+    // The button the cell's controls sit in (a SwiftUI post) is what opening the row means: activate it on tap.
+    for (SFNode *n in inner) if (n.source && (row.source = SFOwningButton(n.source))) break;
     [s.nodes addObject:row];
   }
 }
@@ -150,7 +153,10 @@ static void TextItems(SFSnapshot *s) {
     if (!t.shown || t.header || t.reactNative) continue;
     CGPoint mid = SFMid(t.visibleFrame); BOOL covered = NO;
     for (SFNode *n in s.nodes) if (n.role != SFRoleRow && CGRectContainsPoint(n.frame, mid)) { covered = YES; break; }
-    if (!covered && s.textItems.count < kSFMaxTextItems) [s.textItems addObject:@{@"label": t.label, @"tap": SFPointJSON(mid)}];
+    if (covered || s.textItems.count >= kSFMaxTextItems) continue;
+    NSMutableDictionary *item = [@{@"label": t.label, @"tap": SFPointJSON(mid)} mutableCopy];
+    if (t.owner) item[@"partOf"] = t.ownerLabel ?: @"";  // known tappable: part of this button
+    [s.textItems addObject:item];
   }
 }
 

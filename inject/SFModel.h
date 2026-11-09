@@ -42,6 +42,8 @@ NSString *SFRoleName(SFRole role);
 @property(nonatomic, copy) NSString *scrollRef;
 @property(nonatomic) BOOL shown, header, reactNative;
 @property(nonatomic, copy) NSString *direction;  // scrolled out of view: which way
+@property(nonatomic, weak) id owner;            // the button this text is part of (tapping the text = tapping it)
+@property(nonatomic, copy) NSString *ownerLabel;
 @end
 
 // A list cell or accessibility container that may become an "open item" row.
@@ -83,6 +85,7 @@ CGRect SFFrameOnScreen(UIView *v);
 SFRole SFRoleOf(id obj);
 BOOL SFIsChartPoint(id obj);
 BOOL SFIsStatus(id obj);
+id SFOwningButton(id obj);
 BOOL SFIsLoadingIndicator(UIView *v);
 BOOL SFIsRNText(UIView *v);
 BOOL SFIsTextView(UIView *v);

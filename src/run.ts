@@ -62,7 +62,9 @@ function actionSpace(sc: Screen) {
   // Last resort: visible text with no element of its own (SwiftUI tap-gesture views, e.g. theme cards).
   (sc.textItems ?? []).filter((t) => !neverLabels || !neverLabels.test(t.label)).slice(0, 30).forEach((t, j) => {
     const index = `t${j + 1}`;
-    elements.push({ index, role: "text", label: `text, may be tappable: ${t.label}`, operations: ["CLICK"] });
+    // partOf: the text sits inside a button (a post, a name), so tapping it is tapping that button.
+    const what = t.partOf === undefined ? "text, may be tappable" : `text, tappable${t.partOf ? ` (part of "${t.partOf}")` : " (part of the item around it)"}`;
+    elements.push({ index, role: "text", label: `${what}: ${t.label}`, operations: ["CLICK"] });
     (targets.CLICK ??= {})[index] = { kind: "textitem", id: "", label: t.label, frame: [t.tap[0], t.tap[1], 0, 0], tap: t.tap };
   });
   for (const a of sc.scrolls) for (const dir of a.more) {

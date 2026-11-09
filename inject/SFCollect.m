@@ -71,6 +71,8 @@ static void Consider(SFSnapshot *s, id obj, UIView *owner, CGRect frame, CGRect 
       SFText *t = [SFText new];
       t.label = label; t.frame = SFRound(frame); t.visibleFrame = vis; t.scrollRef = scroll.ref;
       t.shown = shown; t.header = role == SFRoleHeader;
+      id owner = isView ? nil : SFOwningButton(obj);
+      if (owner) { t.owner = owner; t.ownerLabel = [owner accessibilityLabel] ?: @""; }
       if (!shown && [scroll.more containsObject:DirectionTo(frame, scroll)]) t.direction = DirectionTo(frame, scroll);
       [s.texts addObject:t];
     }
