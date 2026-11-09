@@ -14,8 +14,8 @@ simflick reads the app's screen from inside the app (~25 ms) and acts in it (tap
 - Accounts for apps under test: `~/.config/simflick/accounts/*.env` (mode 600), e.g. `dex-dev-demo.env`
   (`DEX_DEMO_USERNAME`, `DEX_DEMO_EMAIL`, `DEX_DEMO_PASSWORD`; Dex dev backend). Source it in the same shell
   command that uses it; don't echo the password.
-- **App notes: `~/.config/simflick/apps/<app>.md`** (e.g. `dex.md`): bundle id, simulator, port, account, and a map of
-  the app's screens. Read the note for the app you're asked to test before anything else.
+- **App notes live in the app's repo: `.simflick/README.md`** (e.g. dex-mobile): bundle id, port, where the test
+  account is, and a map of the app's screens. Read it before anything else; it's linked from the repo's CLAUDE.md.
 - Sims: `xcrun simctl list devices booted`. Address sims by UDID, never `booted`.
 
 ## Commands
