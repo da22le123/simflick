@@ -5,17 +5,34 @@ Fast UI driving for iOS simulator apps, built for AI agents (in the spirit of
 
 <a href="docs/demo.mp4"><img src="docs/demo.gif" alt="Claude Code uses simflick to test the Dex app: create a folder and a deck with two cards, practice it (one known, one unknown), reach the completion screen" width="100%" /></a>
 
-[Watch the MP4](docs/demo.mp4)
+## What it is
 
-A small Objective-C library is injected into the app at launch. It serves, over localhost:
+simflick is a small library that gets injected into an iOS simulator app at launch, wrapped in a CLI. From inside the app it reads what's actually on screen (visible elements, their text and tap points,
+scroll areas, popups, web view content) in ~25 ms, and acts on it: taps, swipes and typing go through the app itself, not through the simulator from outside.
 
-- `GET /screen`: only what is actually on screen (visible, not covered, not clipped), with true
-  screen coordinates, a tap point per element, visible text, scroll areas with "more" directions,
-  and the keyboard state. ~25 ms.
-- `POST /tap?x=&y=`: an in-process touch (UITouch + IOHIDEvent, KIF-style). ~75 ms.
-- `POST /swipe?x1=&y1=&x2=&y2=&ms=`: a controlled drag that holds before lifting, so lists don't fling.
+On top of that sits a loop: inspect the UI, let a decision model pick the next action, execute it, repeat. By default the model is TypeSafe's Jev (~200 ms per decision), but the loop doesn't care who decides — any model, or an agent like Claude Code calling `simflick screen` / `tap` / `type` itself.
 
-AXe (the out-of-process alternative) takes 0.4–2 s per screen read and ~1.3 s per tap.
+## What you'd use it for
+
+- **Letting a coding agent test what it just built.** Claude Code changes a screen, then runs `simflick run "<what to check>" --steps "<plan>"` and verifies the end state from a screenshot. The agent plans and checks; simflick does the fast clicking.
+- **End-to-end checks without writing test scripts.** A goal plus a step list instead of a Maestro YAML file with test ids and waits.
+- **Reproducing a bug or reaching a deep screen fast**, e.g. "open the third deck, practice it, swipe two cards left".
+- **Demos and screen recordings** of a flow, at real speed.
+
+### How fast
+
+Measured on [Dex](https://dex.cards), my flashcard app: React Native + Expo, live on the App Store,
+with its own Maestro suite of 17 end-to-end flows. Same flow for every tool (Profile → Language →
+Spanish → check → English → check), same simulator (iPhone 16 Pro, iOS 18.6), app already open on Home:
+
+| Driven by | Time | What it needs |
+|---|---:|---|
+| **simflick** (`run` + `--steps`) | **10.8 s** | A goal and a step plan in plain English |
+| Maestro | 34–38 s per run<br>(~15 s flow + ~23 s driver startup) | A YAML flow with test ids and waits |
+| AXe, scripted (no model) | 34–37 s | A script with test ids; each screen read 1–2 s, each tap ~1.3 s |
+| Claude Code driving AXe step by step | 68 s | Nothing up front; one model turn per step |
+
+The Claude Code row is a best case: it already knew the test ids and merged two steps.
 
 ## Install
 
