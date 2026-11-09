@@ -31,13 +31,22 @@ static int Rejection(SFRequest r, NSString *token) {
   return 0;
 }
 
-static NSData *Route(SFRequest r) {
+// Runs `work` on the main thread; gives up after a few seconds so a stuck app can't wedge the server thread.
+static NSData *OnMain(NSData *(^work)(void)) {
   __block NSData *body = nil;
+  dispatch_semaphore_t done = dispatch_semaphore_create(0);
+  dispatch_async(dispatch_get_main_queue(), ^{ @autoreleasepool { body = work(); } dispatch_semaphore_signal(done); });
+  if (dispatch_semaphore_wait(done, dispatch_time(DISPATCH_TIME_NOW, 8 * NSEC_PER_SEC))) return nil;
+  return body;
+}
+
+static NSData *Route(SFRequest r) {
+  NSData *body = nil;
   if ([r.path isEqualToString:@"/screen"]) {
     BOOL debug = r.query[@"debug"] != nil;
-    dispatch_sync(dispatch_get_main_queue(), ^{ @autoreleasepool { body = SFScreenJSON(debug); } });
+    body = OnMain(^{ return SFScreenJSON(debug); });
   } else if ([r.path isEqualToString:@"/debug"]) {
-    dispatch_sync(dispatch_get_main_queue(), ^{ body = SFViewDump(); });
+    body = OnMain(^{ return SFViewDump(); });
   } else {
     body = SFHandleAction(r.path, r.query);  // waits on the main thread itself
   }
@@ -65,6 +74,8 @@ static void *Loop(void *arg) {
   for (;;) {
     int cl = accept(fd, NULL, NULL);
     if (cl < 0) continue;
+    // A client hanging up mid-reply must not SIGPIPE (kill) the app we live in.
+    setsockopt(cl, SOL_SOCKET, SO_NOSIGPIPE, &one, sizeof one);
     char buf[2048];
     ssize_t n = recv(cl, buf, sizeof buf - 1, 0);
     buf[n > 0 ? n : 0] = 0;

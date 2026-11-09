@@ -7,7 +7,7 @@ typedef struct { BOOL reachable; CGPoint tap; } SFProbe;
 // Reachable = a hit test at the middle or a quarter point lands on the owner (not on something covering it).
 static SFProbe Probe(id obj, UIView *owner, CGRect vis, NSArray<UIWindow *> *windows) {
   SFProbe r = {NO, CGPointZero};
-  if (CGRectIsEmpty(vis) || vis.size.width < 2 || vis.size.height < 2) return r;
+  if (CGRectIsEmpty(vis) || vis.size.width < kSFMinProbeSide || vis.size.height < kSFMinProbeSide) return r;
   CGFloat w = vis.size.width, h = vis.size.height;
   CGPoint pts[5] = {SFMid(vis),
     {CGRectGetMinX(vis) + w * .25, CGRectGetMinY(vis) + h * .25}, {CGRectGetMaxX(vis) - w * .25, CGRectGetMinY(vis) + h * .25},
@@ -25,7 +25,7 @@ static SFProbe Probe(id obj, UIView *owner, CGRect vis, NSArray<UIWindow *> *win
 static BOOL IsSliver(CGRect frame, CGRect vis) {
   CGFloat area = frame.size.width * frame.size.height;
   CGFloat frac = area > 0 ? (vis.size.width * vis.size.height) / area : 0;
-  return frac < 0.33 && (vis.size.height < 24 || vis.size.width < 24);
+  return frac < kSFSliverFraction && (vis.size.height < kSFSliverSide || vis.size.width < kSFSliverSide);
 }
 
 // Which way to scroll to bring `frame` into the scroll area.
@@ -90,15 +90,15 @@ static void Consider(SFSnapshot *s, id obj, UIView *owner, CGRect frame, CGRect 
     scroll.hiddenCount++;
     n.direction = DirectionTo(frame, scroll);
     n.context = isView ? SFContextFor(v, label, YES) : axContext;
-    if (s.hidden.count < 200) [s.hidden addObject:n];
+    if (s.hidden.count < kSFMaxHidden) [s.hidden addObject:n];
   }
 }
 
 static void WalkAX(SFSnapshot *s, id el, UIView *owner, CGRect clip, SFScrollArea *scroll, int depth, NSArray *siblings) {
-  if (depth > 40 || ([el respondsToSelector:@selector(accessibilityElementsHidden)] && [el accessibilityElementsHidden])) return;
+  if (depth > kSFMaxAXDepth || ([el respondsToSelector:@selector(accessibilityElementsHidden)] && [el accessibilityElementsHidden])) return;
   if ([el isAccessibilityElement]) {
     CGRect frame = [el accessibilityFrame];  // already in screen coordinates
-    Consider(s, el, owner, frame, CGRectIntersection(frame, clip), scroll, siblings.count < 8 ? SFSiblingText(siblings, el) : @"");
+    Consider(s, el, owner, frame, CGRectIntersection(frame, clip), scroll, siblings.count < kSFMaxSiblingsForContext ? SFSiblingText(siblings, el) : @"");
   }
   NSArray *kids = SFAXChildren(el);
   // A non-element container with several children (e.g. one post: header, text, buttons) may be an "open item" row.
@@ -106,7 +106,7 @@ static void WalkAX(SFSnapshot *s, id el, UIView *owner, CGRect clip, SFScrollAre
     CGRect f = [el respondsToSelector:@selector(accessibilityFrame)] ? [el accessibilityFrame] : CGRectNull;
     if (s.debug) [s.debug addObject:@{@"container": NSStringFromClass([el class]), @"kids": @(kids.count), @"frame": SFRectJSON(f), @"inScroll": @(scroll != nil)}];
     CGRect gf = CGRectIntersection(f, clip), screen = UIScreen.mainScreen.bounds;
-    if (scroll && !CGRectIsNull(f) && !CGRectIsEmpty(gf) && gf.size.height >= 50 && gf.size.height < screen.size.height * 0.7 && gf.size.width >= screen.size.width * 0.6) {
+    if (scroll && !CGRectIsNull(f) && !CGRectIsEmpty(gf) && gf.size.height >= kSFGroupMinHeight && gf.size.height < screen.size.height * kSFGroupMaxScreenHeight && gf.size.width >= screen.size.width * kSFGroupMinScreenWidth) {
       SFRowCandidate *rc = [SFRowCandidate new];
       rc.frame = gf; rc.scrollRef = scroll.ref; rc.axGroup = YES;
       [s.rowCandidates addObject:rc];
@@ -129,29 +129,42 @@ static SFScrollArea *ScrollAreaFor(SFSnapshot *s, UIView *v, CGRect vis) {
   if (o.x + b.width < cs.width + in.right - 1) [more addObject:@"right"];
   SFScrollArea *a = [SFScrollArea new];
   a.ref = [NSString stringWithFormat:@"S%lu", (unsigned long)s.scrolls.count];
-  a.identifier = SFNearestId(v); a.visibleFrame = vis; a.offset = o; a.contentSize = cs; a.more = more; a.paging = sv.isPagingEnabled;
+  a.identifier = SFNearestId(v); a.view = v; a.visibleFrame = vis; a.offset = o; a.contentSize = cs; a.more = more; a.paging = sv.isPagingEnabled;
   [s.scrolls addObject:a];
   return a;
 }
 
+// Animations that never end (caret blink, shimmer, spinners) don't mean the screen is still changing.
+static BOOL IsTransitioning(CALayer *layer) {
+  for (NSString *key in layer.animationKeys) {
+    CAAnimation *a = [layer animationForKey:key];
+    if (a.repeatCount < 1e6 && a.repeatDuration < 1e6) return YES;
+  }
+  return NO;
+}
+
 static void Walk(SFSnapshot *s, UIView *v, CGRect clip, SFScrollArea *scroll) {
-  if (v.hidden || v.layer.presentationLayer.opacity < 0.01 || v.alpha < 0.01) return;
+  // A layer not yet committed has no presentation layer; that's not "transparent".
+  CALayer *shown = v.layer.presentationLayer;
+  if (v.hidden || v.alpha < kSFInvisibleAlpha || (shown && shown.opacity < kSFInvisibleAlpha)) return;
   CGRect frame = SFFrameOnScreen(v);
   CGRect vis = CGRectIntersection(frame, clip);
   BOOL onScreen = !CGRectIsEmpty(vis);
   if (v.isFirstResponder) s.focused = v;
   // Core Animation moves layers while views already report final frames; flag it so callers keep waiting.
-  if (v.layer.animationKeys.count && onScreen) s.animating = YES;
+  if (onScreen && IsTransitioning(v.layer)) s.animating = YES;
   if (onScreen && SFIsLoadingIndicator(v)) s.loading = YES;
 
   // Content drawn by another process (Safari sheets, web sign-in, some system UI) is opaque to us and to axe.
-  if ([NSStringFromClass(v.class) isEqualToString:@"_UIRemoteView"] && onScreen) {
+  static Class remoteView;
+  if (!remoteView) remoteView = NSClassFromString(@"_UIRemoteView");
+  if (remoteView && [v isKindOfClass:remoteView] && onScreen) {
     UIView *hit = SFHitView(SFMid(vis), s.windows);
     NSString *host = @"";
     for (UIView *p = v.superview; p && !host.length; p = p.superview) if (![NSStringFromClass(p.class) hasPrefix:@"_"]) host = NSStringFromClass(p.class);
     if (hit && [hit isDescendantOfView:v]) [s.remote addObject:@{@"frame": SFRectJSON(vis), @"host": host}];
   }
-  if (([v isKindOfClass:UICollectionViewCell.class] || [v isKindOfClass:UITableViewCell.class]) && vis.size.height >= 30 && scroll) {
+  if (([v isKindOfClass:UICollectionViewCell.class] || [v isKindOfClass:UITableViewCell.class]) && vis.size.height >= kSFCellMinHeight && scroll) {
     SFRowCandidate *rc = [SFRowCandidate new];
     rc.frame = vis; rc.scrollRef = scroll.ref;
     [s.rowCandidates addObject:rc];

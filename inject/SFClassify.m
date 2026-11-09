@@ -1,9 +1,17 @@
 #import "SFModel.h"
 #import <objc/message.h>
 
+static BOOL InWebView(id obj) {
+  static Class web;
+  if (!web) web = NSClassFromString(@"WKWebView");
+  if (!web || ![obj isKindOfClass:UIView.class]) return NO;
+  for (UIView *v = obj; v; v = v.superview) if ([v isKindOfClass:web]) return YES;
+  return NO;
+}
+
 SFRole SFRoleOf(id obj) {
-  // Web views and read-only text views adopt UITextInput too, but you can't type into them.
-  BOOL editable = !([obj isKindOfClass:UITextView.class] && !((UITextView *)obj).editable) && ![NSStringFromClass([obj class]) hasPrefix:@"WK"];
+  // Web views (and their content view) and read-only text views adopt UITextInput too, but you can't type into them.
+  BOOL editable = !([obj isKindOfClass:UITextView.class] && !((UITextView *)obj).editable) && !InWebView(obj);
   if (editable && [obj conformsToProtocol:@protocol(UITextInput)]) return SFRoleInput;
   UIAccessibilityTraits t = [obj accessibilityTraits];
   if (t & UIAccessibilityTraitButton) return SFRoleButton;
@@ -23,7 +31,9 @@ BOOL SFIsChartPoint(id obj) {
 // Content still arriving: a spinning UIActivityIndicatorView or a web view that is loading.
 BOOL SFIsLoadingIndicator(UIView *v) {
   if ([v isKindOfClass:UIActivityIndicatorView.class]) return ((UIActivityIndicatorView *)v).isAnimating;
-  if ([NSStringFromClass(v.class) isEqualToString:@"WKWebView"] && [v respondsToSelector:@selector(isLoading)])
+  static Class web;
+  if (!web) web = NSClassFromString(@"WKWebView");
+  if (web && [v isKindOfClass:web] && [v respondsToSelector:@selector(isLoading)])
     return ((BOOL (*)(id, SEL))objc_msgSend)(v, @selector(isLoading));
   return NO;
 }

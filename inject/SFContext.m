@@ -6,7 +6,8 @@ static BOOL IsParagraph(UIView *v) { return [NSStringFromClass(v.class) contains
 
 // Skips text owned by other tappable elements (e.g. a neighbouring tab), which would mislabel this one.
 static void CollectText(UIView *v, UIView *me, NSMutableArray *out, int depth, BOOL offscreenOK) {
-  if (depth > 10 || out.count > 6 || v.hidden || v.alpha < 0.01 || v.layer.presentationLayer.opacity < 0.01) return;
+  CALayer *shown = v.layer.presentationLayer;
+  if (depth > kSFContextDepth || out.count > kSFContextMaxTexts || v.hidden || v.alpha < kSFInvisibleAlpha || (shown && shown.opacity < kSFInvisibleAlpha)) return;
   if (v != me && v.isAccessibilityElement && !IsParagraph(v)) return;
   if (IsParagraph(v)) {
     // Closed sheets park their text off screen; only count text that is on screen.
@@ -24,13 +25,13 @@ NSString *SFContextFor(UIView *v, NSString *own, BOOL offscreenOK) {
   for (UIView *p = v.superview; p && ![p isKindOfClass:UIScrollView.class]; p = p.superview)
     if (p.isAccessibilityElement && p.accessibilityLabel.length) return p.accessibilityLabel;
   UIView *a = v.superview;
-  for (int i = 0; a && i < 5; i++, a = a.superview) {
+  for (int i = 0; a && i < kSFContextClimb; i++, a = a.superview) {
     if ([a isKindOfClass:UIScrollView.class] || [a isKindOfClass:UIWindow.class]) break;
     NSMutableArray *t = [NSMutableArray array];
     CollectText(a, v, t, 0, offscreenOK);
-    if (t.count > 6) break;
+    if (t.count > kSFContextMaxTexts) break;
     [t removeObject:own ?: @""];
-    if (t.count) { NSString *j = [t componentsJoinedByString:@" · "]; return j.length > 100 ? [j substringToIndex:100] : j; }
+    if (t.count) { NSString *j = [t componentsJoinedByString:@" · "]; return j.length > kSFContextMaxChars ? [j substringToIndex:kSFContextMaxChars] : j; }
   }
   return @"";
 }

@@ -32,7 +32,9 @@ typedef void (*AppendFn)(HIDRef, HIDRef, uint32_t);
 static HandFn sHand; static FingerFn sFinger; static SetIntFn sSetInt; static AppendFn sAppend;
 enum { kHand = 3, kRange = 1, kTouch = 2, kPosition = 4, kDisplayIntegrated = (11 << 16) | 25 };
 
-static void LoadHID(void) {
+// Private API this needs; a future iOS without one gets a failed tap (the client falls back to axe), not a crash.
+static NSArray<NSString *> *Unavailable(void) {
+  static NSArray *missing;
   static dispatch_once_t once;
   dispatch_once(&once, ^{
     dlopen("/System/Library/Frameworks/IOKit.framework/IOKit", RTLD_NOW);
@@ -40,7 +42,17 @@ static void LoadHID(void) {
     sFinger = (FingerFn)dlsym(RTLD_DEFAULT, "IOHIDEventCreateDigitizerFingerEventWithQuality");
     sSetInt = (SetIntFn)dlsym(RTLD_DEFAULT, "IOHIDEventSetIntegerValue");
     sAppend = (AppendFn)dlsym(RTLD_DEFAULT, "IOHIDEventAppendEvent");
+    NSMutableArray *m = [NSMutableArray array];
+    if (!sHand || !sFinger || !sSetInt || !sAppend) [m addObject:@"IOHIDEvent functions"];
+    for (NSString *sel in @[@"setWindow:", @"setView:", @"setPhase:", @"setTimestamp:", @"_setLocationInWindow:resetPrevious:", @"_setHidEvent:"])
+      if (![UITouch instancesRespondToSelector:NSSelectorFromString(sel)]) [m addObject:[@"UITouch " stringByAppendingString:sel]];
+    Class touches = NSClassFromString(@"UITouchesEvent") ?: UIEvent.class;  // what _touchesEvent returns
+    for (NSString *sel in @[@"_clearTouches", @"_setHIDEvent:", @"_addTouch:forDelayedDelivery:"])
+      if (![touches instancesRespondToSelector:NSSelectorFromString(sel)]) [m addObject:[@"UITouchesEvent " stringByAppendingString:sel]];
+    if (![UIApplication instancesRespondToSelector:@selector(_touchesEvent)]) [m addObject:@"UIApplication _touchesEvent"];
+    missing = m;
   });
+  return missing;
 }
 
 static HIDRef HIDFor(UITouch *t) {
@@ -70,8 +82,10 @@ static void Send(UITouch *t, UITouchPhase phase) {
   [UIApplication.sharedApplication sendEvent:e];
 }
 
+// Main thread only: optional selectors that were missing, and what the last touch landed on (for diagnosis).
 static NSMutableSet *gMissing;
 static NSDictionary *gLastHit;
+static BOOL gBusy;
 static void Missing(NSString *sel) { if (!gMissing) gMissing = [NSMutableSet set]; [gMissing addObject:sel]; }
 
 // Topmost visible window whose hit-test claims the point, like a real finger.
@@ -99,7 +113,6 @@ static UITouch *TouchAt(CGPoint screenPt, UIView **hitOut) {
 
 // Path of points (screen coords) with per-step delay; the last few points repeat to kill momentum.
 static void RunPath(NSArray<NSValue *> *pts, double stepSec, void (^done)(NSString *hitId)) {
-  LoadHID();
   UIView *hit = nil;
   UITouch *t = TouchAt(pts.firstObject.CGPointValue, &hit);
   if (!t) { done(nil); return; }
@@ -135,16 +148,28 @@ NSData *SFHandleAction(NSString *path, NSDictionary<NSString *, NSString *> *q) 
     for (int i = 0; i < 4; i++) [pts addObject:[NSValue valueWithCGPoint:p]];  // ~50 ms press, no movement
   } else if ([path isEqualToString:@"/swipe"]) {
     CGPoint a = CGPointMake(Q(q, @"x1", 0), Q(q, @"y1", 0)), b = CGPointMake(Q(q, @"x2", 0), Q(q, @"y2", 0));
-    int n = MAX(2, (int)(Q(q, @"ms", 300) / 1000.0 / step));
+    int n = MAX(2, (int)(MIN(MAX(Q(q, @"ms", 300), 0), 3000) / 1000.0 / step));  // at most 3 s
     for (int i = 0; i <= n; i++) [pts addObject:[NSValue valueWithCGPoint:CGPointMake(a.x + (b.x - a.x) * i / n, a.y + (b.y - a.y) * i / n)]];
     if (!q[@"fling"]) for (int i = 0; i < 6; i++) [pts addObject:pts.lastObject];  // hold ~100 ms before lifting
   } else {
     return nil;
   }
+  NSArray *unavailable = Unavailable();
+  if (unavailable.count) return [NSJSONSerialization dataWithJSONObject:@{@"ok": @NO, @"error": @"touch synthesis unavailable", @"missing": unavailable} options:0 error:nil];
   dispatch_semaphore_t sem = dispatch_semaphore_create(0);
-  __block NSString *hitId = nil;
-  dispatch_async(dispatch_get_main_queue(), ^{ RunPath(pts, step, ^(NSString *h) { hitId = h; dispatch_semaphore_signal(sem); }); });
-  dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC));
-  NSDictionary *out = @{@"ok": @(hitId != nil), @"hit": hitId ?: [NSNull null], @"ms": @((CACurrentMediaTime() - t0) * 1000), @"missingSelectors": gMissing.allObjects ?: @[], @"debug": gLastHit ?: @{}};
+  __block NSDictionary *result = nil;
+  dispatch_async(dispatch_get_main_queue(), ^{
+    // One gesture at a time: a second one would share (and clear) the same touches event.
+    if (gBusy) { result = @{@"ok": @NO, @"error": @"another gesture is still running"}; dispatch_semaphore_signal(sem); return; }
+    gBusy = YES;
+    RunPath(pts, step, ^(NSString *hitId) {
+      gBusy = NO;
+      result = @{@"ok": @(hitId != nil), @"hit": hitId ?: [NSNull null], @"missingSelectors": gMissing.allObjects ?: @[], @"debug": gLastHit ?: @{}};
+      dispatch_semaphore_signal(sem);
+    });
+  });
+  BOOL timedOut = dispatch_semaphore_wait(sem, dispatch_time(DISPATCH_TIME_NOW, 5 * NSEC_PER_SEC)) != 0;
+  NSMutableDictionary *out = [(timedOut ? @{@"ok": @NO, @"error": @"gesture did not finish in 5 s"} : result) mutableCopy];
+  out[@"ms"] = @((CACurrentMediaTime() - t0) * 1000);
   return [NSJSONSerialization dataWithJSONObject:out options:0 error:nil];
 }

@@ -1,5 +1,6 @@
 // Shared types and helpers of the injected reader. Pipeline: SFCollect (walk) -> SFRefine (passes) -> SFScreenJSON.
 #import <UIKit/UIKit.h>
+#import "SFTuning.h"
 
 typedef NS_ENUM(NSInteger, SFRole) {
   SFRoleElement, SFRoleButton, SFRoleLink, SFRoleInput, SFRoleSwitch, SFRoleAdjustable, SFRoleHeader, SFRoleText, SFRoleRow,
@@ -8,6 +9,7 @@ NSString *SFRoleName(SFRole role);
 
 @interface SFScrollArea : NSObject
 @property(nonatomic, copy) NSString *ref, *identifier;   // ref = "S0", "S1"… in walk order
+@property(nonatomic, weak) UIView *view;
 @property(nonatomic) CGRect visibleFrame;
 @property(nonatomic) CGPoint offset;
 @property(nonatomic) CGSize contentSize;

@@ -3,14 +3,16 @@
 
 static BOOL SameScroll(NSString *a, NSString *b) { return [(a ?: @"") isEqualToString:(b ?: @"")]; }
 
-// A spot inside `area` on no listed element and reachable by a tap, nearest to `aim`; NO if there is none.
-static BOOL FreeSpot(CGRect area, NSArray<NSValue *> *avoid, int cols, int rows, CGPoint aim, NSArray<UIWindow *> *windows, CGPoint *out) {
+// A spot inside `area` on no listed element, nearest to `aim`, where a tap lands inside `within` (the row's list,
+// not a tab bar or nav bar over it; nil = anywhere). NO if there is none.
+static BOOL FreeSpot(CGRect area, NSArray<NSValue *> *avoid, int cols, int rows, CGPoint aim, NSArray<UIWindow *> *windows, UIView *within, CGPoint *out) {
   double bestD = 1e9;
   for (int gx = 1; gx < cols; gx++) for (int gy = 1; gy < rows; gy++) {
     CGPoint p = CGPointMake(CGRectGetMinX(area) + area.size.width * gx / cols, CGRectGetMinY(area) + area.size.height * gy / rows);
     BOOL onElement = NO;
-    for (NSValue *ev in avoid) if (CGRectContainsPoint(CGRectInset(ev.CGRectValue, -4, -4), p)) { onElement = YES; break; }
-    if (onElement || !SFHitView(p, windows)) continue;
+    for (NSValue *ev in avoid) if (CGRectContainsPoint(CGRectInset(ev.CGRectValue, -kSFFreeSpotPadding, -kSFFreeSpotPadding), p)) { onElement = YES; break; }
+    UIView *hit = onElement ? nil : SFHitView(p, windows);
+    if (!hit || (within && ![hit isDescendantOfView:within])) continue;
     double d = hypot(p.x - aim.x, p.y - aim.y);
     if (d < bestD) { bestD = d; *out = p; }
   }
@@ -30,7 +32,7 @@ static void NearestTextContext(SFSnapshot *s) {
   for (SFNode *n in all) {
     if (n.role == SFRoleText || n.context.length || !n.scrollRef) continue;
     CGPoint m = SFMid(n.frame);
-    double best = 100; NSString *ctx = nil;
+    double best = kSFNearestTextRadius; NSString *ctx = nil;
     for (SFText *t in s.texts) {
       if (!t.fromAX || ![t.scrollRef isEqualToString:n.scrollRef]) continue;
       double d = hypot(SFMid(t.frame).x - m.x, SFMid(t.frame).y - m.y);
@@ -51,8 +53,8 @@ static void MergeSamePlace(SFSnapshot *s) {
     NSInteger dup = NSNotFound;
     for (NSUInteger j = 0; j < merged.count && dup == NSNotFound; j++) {
       CGRect f = n.frame, g = merged[j].frame;
-      if (fabs(CGRectGetMidX(f) - CGRectGetMidX(g)) < 6 && fabs(CGRectGetMidY(f) - CGRectGetMidY(g)) < 6 &&
-          fabs(f.size.width - g.size.width) < 12 && fabs(f.size.height - g.size.height) < 12) dup = j;
+      if (fabs(CGRectGetMidX(f) - CGRectGetMidX(g)) < kSFSamePlaceCenter && fabs(CGRectGetMidY(f) - CGRectGetMidY(g)) < kSFSamePlaceCenter &&
+          fabs(f.size.width - g.size.width) < kSFSamePlaceSize && fabs(f.size.height - g.size.height) < kSFSamePlaceSize) dup = j;
     }
     if (dup == NSNotFound) [merged addObject:n];
     else if (Richness(n) > Richness(merged[dup])) merged[dup] = n;
@@ -72,64 +74,71 @@ static void DropCaptionsInsideControls(SFSnapshot *s) {
   [s.nodes setArray:kept];
 }
 
-// A list cell that opens something when tapped (e.g. a post) has no element of its own in SwiftUI;
-// add one, tapped on a free spot (away from the buttons inside it), as a person would.
+// --- "Open item" rows: something that opens when tapped (a post, a list cell) but isn't one clean element. ---
+
+// Label from what's inside: visible text first, then each inner element's label and context, at most 3 phrases.
+static NSString *RowLabel(NSArray<NSString *> *texts, NSArray<SFNode *> *inner) {
+  NSMutableArray *words = [NSMutableArray arrayWithArray:texts];
+  for (SFNode *n in inner) if (words.count < kSFRowLabelPhrases) { AddWord(words, n.label ?: @""); AddWord(words, n.context ?: @""); }
+  return Clip([words componentsJoinedByString:@" · "], kSFRowLabelChars);
+}
+
+// Where a person taps to open it: a free spot (on no inner element) nearest `aim`.
+static BOOL RowTap(SFSnapshot *s, CGRect area, NSString *scrollRef, NSArray<SFNode *> *inner, CGPoint aim, CGPoint *out) {
+  NSMutableArray *avoid = [NSMutableArray array];
+  for (SFNode *n in inner) [avoid addObject:[NSValue valueWithCGRect:n.frame]];
+  return FreeSpot(area, avoid, kSFFreeSpotColumns, kSFFreeSpotRows, aim, s.windows, scrollRef ? [s scrollWithRef:scrollRef].view : nil, out);
+}
+
+// A list cell or AX group that opens something (e.g. a SwiftUI post) has no element of its own: add one.
 static void RowsFromCells(SFSnapshot *s) {
   for (SFRowCandidate *cell in s.rowCandidates) {
     CGRect cf = cell.frame;
-    NSMutableArray *words = [NSMutableArray array], *inside = [NSMutableArray array];
+    NSMutableArray<NSString *> *texts = [NSMutableArray array];
+    NSMutableArray<SFNode *> *inner = [NSMutableArray array];
     for (SFText *t in s.texts)
-      if (t.fromAX && t.shown && !t.header && CGRectContainsPoint(cf, SFMid(t.visibleFrame))) [words addObject:t.label];
-    for (SFNode *n in s.nodes) {
-      if (!CGRectContainsPoint(cf, SFMid(n.frame)) || ![n.scrollRef isEqualToString:cell.scrollRef]) continue;  // e.g. a tab bar over the cell's edge
-      [inside addObject:[NSValue valueWithCGRect:n.frame]];
-      if (words.count < 3) { AddWord(words, n.label ?: @""); AddWord(words, n.context ?: @""); }
-    }
-    if (!words.count) continue;
-    if (cell.axGroup && inside.count < 2) continue;
-    // Redundant rows: a cell that is basically one control, or that hosts its own scroll area (a carousel).
-    BOOL oneControl = NO, hostsScroll = NO, dupRow = NO;
-    for (NSValue *ev in inside)
-      if (ev.CGRectValue.size.width * ev.CGRectValue.size.height >= 0.7 * cf.size.width * cf.size.height) oneControl = YES;
+      if (t.fromAX && t.shown && !t.header && CGRectContainsPoint(cf, SFMid(t.visibleFrame))) [texts addObject:t.label];
+    for (SFNode *n in s.nodes)  // same scroll area: not e.g. a tab bar over the cell's edge
+      if (CGRectContainsPoint(cf, SFMid(n.frame)) && [n.scrollRef isEqualToString:cell.scrollRef]) [inner addObject:n];
+    // Not a row: one control (it already is the row), a carousel host, or a duplicate of a row already added.
+    // An AX group needs several elements to be an item; a real list cell may hold only text.
+    if (inner.count == 1 || (cell.axGroup && inner.count < 2)) continue;
+    BOOL redundant = NO;
+    for (SFNode *n in inner) if (n.frame.size.width * n.frame.size.height >= kSFOneControlFraction * cf.size.width * cf.size.height) redundant = YES;
     for (SFScrollArea *a in s.scrolls)
-      if (![a.ref isEqualToString:cell.scrollRef] && CGRectContainsPoint(cf, SFMid(SFRound(a.visibleFrame)))) hostsScroll = YES;
-    if (oneControl || hostsScroll || inside.count == 1) continue;
+      if (![a.ref isEqualToString:cell.scrollRef] && CGRectContainsPoint(cf, SFMid(SFRound(a.visibleFrame)))) redundant = YES;
     for (SFNode *n in s.nodes) if (n.role == SFRoleRow) {
       CGRect ov = CGRectIntersection(n.frame, cf);
-      if (!CGRectIsEmpty(ov) && ov.size.width * ov.size.height > 0.8 * MIN(n.frame.size.width * n.frame.size.height, cf.size.width * cf.size.height)) dupRow = YES;
+      if (!CGRectIsEmpty(ov) && ov.size.width * ov.size.height > kSFDuplicateRowOverlap * MIN(n.frame.size.width * n.frame.size.height, cf.size.width * cf.size.height)) redundant = YES;
     }
-    if (dupRow) continue;
+    NSString *label = RowLabel(texts, inner);
     CGPoint tap;
-    if (!FreeSpot(cf, inside, 8, 6, SFMid(cf), s.windows, &tap)) continue;
+    if (redundant || !label.length || !RowTap(s, cf, cell.scrollRef, inner, SFMid(cf), &tap)) continue;
     SFNode *row = [SFNode new];
-    row.role = SFRoleRow; row.identifier = @""; row.label = Clip([words componentsJoinedByString:@" · "], 160);
-    row.frame = SFRound(cf); row.tap = tap; row.scrollRef = cell.scrollRef;
+    row.role = SFRoleRow; row.identifier = @""; row.label = label; row.frame = SFRound(cf); row.tap = tap; row.scrollRef = cell.scrollRef;
     [s.nodes addObject:row];
   }
 }
 
-// An element whose area contains other elements is a container (e.g. a whole post as one button). Its own
-// activation point often sits on an inner control (the avatar), so: label it from its contents, tap a free spot.
+// An element whose area holds other elements is a container (e.g. a whole post as one button). Its own
+// activation point often sits on an inner control (the avatar): label it from its contents, tap a free spot.
 static void ContainersToRows(SFSnapshot *s) {
   NSArray<SFNode *> *nodes = [s.nodes copy];
   NSMutableArray<void (^)(void)> *changes = [NSMutableArray array];  // applied after all decisions, so they don't feed each other
   for (SFNode *n in nodes) {
     if (n.role == SFRoleRow || n.role == SFRoleInput) continue;
-    CGRect cf = n.frame;
-    NSMutableArray *inside = [NSMutableArray array], *words = [NSMutableArray array];
-    for (SFNode *o in nodes) {
-      if (o == n || !CGRectContainsRect(CGRectInset(cf, -1, -1), o.frame) || CGRectEqualToRect(o.frame, cf)) continue;
-      if (!SameScroll(o.scrollRef, n.scrollRef)) continue;  // not from another area (tab bar)
-      [inside addObject:[NSValue valueWithCGRect:o.frame]];
-      for (NSString *w in @[o.context ?: @"", o.label ?: @""]) if (words.count < 3) AddWord(words, w);
-    }
-    if (inside.count < 2) continue;
-    // Aim just below the top inner element (a post's header), where its text is; the middle tends to be media.
-    CGRect top = CGRectNull;
-    for (NSValue *ev in inside) if (CGRectIsNull(top) || CGRectGetMinY(ev.CGRectValue) < CGRectGetMinY(top)) top = ev.CGRectValue;
+    NSMutableArray<SFNode *> *inner = [NSMutableArray array];
+    for (SFNode *o in nodes)  // same scroll area: not e.g. a tab bar
+      if (o != n && CGRectContainsRect(CGRectInset(n.frame, -1, -1), o.frame) && !CGRectEqualToRect(o.frame, n.frame) && SameScroll(o.scrollRef, n.scrollRef))
+        [inner addObject:o];
+    if (inner.count < 2) continue;
+    // A container element is typically a whole post as one button: aim just below its top inner element (the
+    // header), where its text is. The middle tends to be media, which opens a viewer or nothing.
+    CGRect top = inner.firstObject.frame;
+    for (SFNode *o in inner) if (CGRectGetMinY(o.frame) < CGRectGetMinY(top)) top = o.frame;
     CGPoint tap;
-    if (!FreeSpot(cf, inside, 10, 16, CGPointMake(CGRectGetMidX(top), CGRectGetMaxY(top) + 18), s.windows, &tap)) continue;
-    NSString *label = n.label.length ? n.label : Clip([words componentsJoinedByString:@" · "], 160);
+    if (!RowTap(s, n.frame, n.scrollRef, inner, CGPointMake(CGRectGetMidX(top), CGRectGetMaxY(top) + kSFBelowHeader), &tap)) continue;
+    NSString *label = n.label.length ? n.label : RowLabel(@[], inner);
     [changes addObject:^{ n.role = SFRoleRow; n.label = label; n.tap = tap; }];
   }
   for (void (^apply)(void) in changes) apply();
@@ -141,7 +150,7 @@ static void TextItems(SFSnapshot *s) {
     if (!t.fromAX || !t.shown || t.header) continue;
     CGPoint mid = SFMid(t.visibleFrame); BOOL covered = NO;
     for (SFNode *n in s.nodes) if (n.role != SFRoleRow && CGRectContainsPoint(n.frame, mid)) { covered = YES; break; }
-    if (!covered && s.textItems.count < 40) [s.textItems addObject:@{@"label": t.label, @"tap": SFPointJSON(mid)}];
+    if (!covered && s.textItems.count < kSFMaxTextItems) [s.textItems addObject:@{@"label": t.label, @"tap": SFPointJSON(mid)}];
   }
 }
 
@@ -149,7 +158,7 @@ static void TextItems(SFSnapshot *s) {
 static void ScrollPreviews(SFSnapshot *s) {
   for (SFScrollArea *a in s.scrolls) {
     NSMutableArray *ahead = [NSMutableArray array];
-    for (SFNode *h in s.hidden) if ([h.scrollRef isEqualToString:a.ref] && ahead.count < 20)
+    for (SFNode *h in s.hidden) if ([h.scrollRef isEqualToString:a.ref] && ahead.count < kSFMaxAhead)
       [ahead addObject:@{@"dir": h.direction, @"what": [@[h.label ?: @"", h.context ?: @""] componentsJoinedByString:@" — "]}];
     a.ahead = ahead;
   }
@@ -159,14 +168,16 @@ static void ScrollPreviews(SFSnapshot *s) {
 static void HiddenTabBarHint(SFSnapshot *s) {
   for (UIWindow *w in s.windows) {
     NSMutableArray *queue = [NSMutableArray arrayWithObjects:w.rootViewController, nil];
-    for (NSUInteger i = 0; i < queue.count && i < 50; i++) {
+    for (NSUInteger i = 0; i < queue.count && i < kSFMaxViewControllers; i++) {
       UIViewController *vc = queue[i];
       [queue addObjectsFromArray:vc.childViewControllers];
       if (vc.presentedViewController) [queue addObject:vc.presentedViewController];
       if (![vc isKindOfClass:UITabBarController.class]) continue;
       UITabBar *bar = ((UITabBarController *)vc).tabBar;
       CGRect f = bar.window ? [bar convertRect:bar.bounds toView:nil] : CGRectNull;
-      if (bar.window && !bar.hidden && bar.alpha > 0.01 && CGRectIntersectsRect(f, UIScreen.mainScreen.bounds)) continue;
+      BOOL hidden = !bar.window || bar.hidden || bar.alpha <= kSFInvisibleAlpha || !CGRectIntersectsRect(f, UIScreen.mainScreen.bounds);
+      // Not UITabBarController.isTabBarHidden (iOS 18): it stays NO when a pushed screen hides the bar.
+      if (!hidden) continue;
       NSMutableArray *names = [NSMutableArray array];
       for (UITabBarItem *it in bar.items) if (it.title.length) [names addObject:it.title];
       if (names.count) [s.notes addObject:[NSString stringWithFormat:@"(Tab bar with %@ is hidden on this screen; go Back to reach it.)", [names componentsJoinedByString:@", "]]];
@@ -175,8 +186,9 @@ static void HiddenTabBarHint(SFSnapshot *s) {
   }
 }
 
-// One control often shows up as its view, an inner AX element and a row: same id + overlapping frames = one entry.
-// A field and a non-field never merge: controls inside a field (Clear text) inherit its id but are separate.
+// One control often shows up as its view, an inner AX element (its icon) and a row: same id + overlapping = one entry.
+// Ids are inherited from ancestors, so a control inside a field (Clear text) shares its id: a field and a non-field
+// never merge. Known gap: a card with an id around a button without one would merge too.
 static int Preference(SFNode *n) { return (n.role == SFRoleRow ? 0 : 4) + (n.role == SFRoleButton ? 2 : 0) + (n.label.length ? 1 : 0); }
 static void MergeSameId(SFSnapshot *s) {
   NSMutableArray<SFNode *> *uniq = [NSMutableArray array];
@@ -191,14 +203,15 @@ static void MergeSameId(SFSnapshot *s) {
   [s.nodes setArray:uniq];
 }
 
+// Order matters; each line says what it relies on.
 void SFRefine(SFSnapshot *s) {
-  NearestTextContext(s);
-  MergeSamePlace(s);
-  DropCaptionsInsideControls(s);
-  RowsFromCells(s);
-  ContainersToRows(s);
-  TextItems(s);
+  NearestTextContext(s);          // first: hidden nodes need context before ScrollPreviews
+  MergeSamePlace(s);              // before rows: duplicates would count as two inner elements
+  DropCaptionsInsideControls(s);  // before rows: same reason
+  RowsFromCells(s);               // adds rows; its duplicate check sees rows added earlier in the loop
+  ContainersToRows(s);            // sees cell rows as inner elements
+  TextItems(s);                   // after both row passes: text under a non-row element is covered
   ScrollPreviews(s);
   HiddenTabBarHint(s);
-  MergeSameId(s);
+  MergeSameId(s);                 // last: collapses a control with the row made from it
 }
