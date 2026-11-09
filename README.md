@@ -34,66 +34,101 @@ Spanish → check → English → check), same simulator (iPhone 16 Pro, iOS 18.
 
 The Claude Code row is a best case: it already knew the test ids and merged two steps.
 
-## Install
+## Quick start
 
 ```sh
-npm install -g github:da22le123/simflick   # private repo: needs GitHub access; builds on install
-# or, from a clone (for development):
-npm install && npm run build && npm link    # puts `simflick` on PATH, pointing at this checkout
+npm install -g github:da22le123/simflick       # builds the library and the CLI on install
+mkdir -p ~/.config/simflick && chmod 700 ~/.config/simflick
+echo 'TYPESAFE_API_KEY=...' > ~/.config/simflick/env && chmod 600 ~/.config/simflick/env
+
+simflick launch com.example.app --udid <UDID>  # relaunches the installed app with the library injected
+simflick screen                                # what the agent sees
+simflick run "Add a deck 'Demo' and practice it" \
+  --steps "tap +; choose Deck; type 'Demo' as the title; tap Create Deck; open the deck 'Demo'; swipe right ×2" \
+  --shot
 ```
 
-Needs Xcode (simulators + clang) and Node ≥ 18. The app must already be installed on the simulator;
-`simflick launch` relaunches it with the library injected. Typing uses `axe` for now (`brew install cameroncooke/axe/axe`).
+Needs Xcode (simulators, clang) and Node ≥ 18. The app has to be installed on the simulator already.
+[AXe](https://github.com/cameroncooke/AXe) (`brew install cameroncooke/axe/axe`) is used for iOS system alerts
+and as a fallback; everything else happens inside the app.
 
-`simflick run` reads its keys from the environment only: `TYPESAFE_API_KEY` (decision model), and for
-typing `ANTHROPIC_API_KEY` or `TEXT_MODEL_API_KEY` (+ `TEXT_MODEL_BASE_URL`, `TEXT_MODEL`). Use whatever
-you already use for secrets, e.g. `export`, direnv, or `op run -- simflick run "..."`.
-Everything else (`screen`, `tap`, `scroll`, `type`) needs no keys.
+## Writing a run
+
+- **Pass `--steps`.** The decision model picks one action at a time; it doesn't hold a plan or count. Steps are
+  followed in order and `×N` steps (`swipe right ×2`) are counted by code.
+  In our tests this took a counting goal from 1 pass in 3 to 4 in 4. End the plan with a step that checks the
+  result (`the completion screen says 'Great work!'`), since the run stops when the last step is done.
+- **Quote what to type** inside the step: `type 'Hola' into card 1 back`.
+- **Name the route** if you know the app: `open Materials; open the folder 'German'; ...`. A screen that merely
+  mentions a word attracts the model.
+- **Start from a clean state** (a fresh session, an empty search) or the run sees leftovers from the last one.
+- **Block what must never be tapped:** `--never "Delete account,Sign out"`.
+- **Check the end state yourself.** `DONE` is the model's claim; `--shot` saves a screenshot, and the trace says why.
+
+## Using it from Claude Code
+
+[`skills/simflick/SKILL.md`](skills/simflick/SKILL.md) is a Claude Code skill: link it into `~/.claude/skills/`
+and Claude Code knows how to launch, plan with `--steps`, verify and read traces. Put app-specific notes (bundle id,
+port, test account location, a map of the screens) in the app's repo as `.simflick/README.md`; the skill reads it first.
 
 ## CLI
 
 ```sh
-simflick launch <bundle-id> [--udid U] [--port P]
-simflick screen               # numbered table; numbers work with tap
-simflick tap 7 --screen       # or a testID, or x,y
-simflick scroll S0 down
-simflick type "hello"         # refuses unless a text field is focused
-simflick run "<goal>" --shot  # decision loop (needs TYPESAFE_API_KEY in .env); trace + end screenshot
+simflick launch <bundle-id> [--udid U] [--port P] [--lang de]
+simflick screen [--json]                   # numbered elements, scroll areas, page text
+simflick tap <n|testID|x,y> [--screen]
+simflick scroll <S0|testID> <up|down|left|right> [--amount 0.6]
+simflick swipe x1,y1 x2,y2 [--ms 300] [--fling]
+simflick type "text"                       # into the focused field; refuses if none is focused
+simflick wait                              # until the screen stops changing
+simflick run "<goal>" [--steps "a; b ×2; c"] [--shot] [--never "A,B"] [--max-steps 60] [--full-trace]
 ```
 
-`run` writes `~/.simflick/runs/<time>.json`: per step the action and what was on screen (`--full-trace` keeps
-the whole screen per step; the final entry always does). `--shot` adds an end-state PNG.
+Every action waits for the screen to settle: nothing animating or moving, no spinner, no change for 150 ms.
+`run` writes a trace to `~/.simflick/runs/<time>.json` after every step: what was on screen, what the model was
+offered, and its top choices with probabilities.
 
-Every action re-checks its target on a fresh read, then waits for the screen to change and settle
-(nothing animating and no change for 150 ms). Element numbers refer to the last `screen` output.
+Keys are read from the environment, then from `~/.config/simflick/env`. `TYPESAFE_API_KEY` drives `run`; for typing
+values that aren't quoted in the goal or steps, `ANTHROPIC_API_KEY` or `TEXT_MODEL_API_KEY` (+ `TEXT_MODEL_BASE_URL`,
+`TEXT_MODEL`). `screen`, `tap`, `scroll`, `swipe` and `type` need no keys.
 
-## Security and caveats
+## What it reads
 
-- Simulator only. Touches are synthesized with private UIKit APIs (as KIF does), so an iOS update can
-  break them; missing methods are reported instead of crashing the app.
-- The injected server listens on `127.0.0.1` and only accepts requests with the per-launch token that
-  `simflick launch` generates (kept in `~/.simflick/<udid>.json`, mode 600). Requests from browsers
-  (`Origin` header) or with a non-local `Host` are rejected, and actions require `POST`.
-- `~/.simflick/runs/` traces contain your app's on-screen text.
+- **UIKit, SwiftUI and React Native** in one model: buttons, links, inputs, switches with their state, sliders, rows,
+  and the text around each control (which card a "Save" button belongs to).
+- **Web views** (`WKWebView`): visible text and links, read from the page and clicked by script.
+- **Gesture-only views** (a flip/swipe card) from their gesture recognizers, with swipe operations.
+- **Lists:** what's scrolled away, and for lazy UIKit/SwiftUI lists a read-ahead of up to 5 screens.
+- **Popups:** in-app alerts and sheets directly, iOS permission alerts through AXe, and controls covered by a toast.
+- **Status:** progress bars and charts as text ("Upload: 40%", "Tue: 5"), screen titles, a hidden tab bar.
 
-## Raw HTTP
+Not supported: UI from another process (share sheet, Safari sign-in sheets: reported as unreadable), maps beyond
+plain taps and drags, and real devices.
+
+## How it works
+
+`inject/` is an Objective-C library loaded with `DYLD_INSERT_LIBRARIES` when `simflick launch` starts the app. It
+walks the view and accessibility trees once (`SFCollect`), applies ordered rules over the result (`SFRefine`: merge
+duplicates, build rows, previews), and serves JSON on `127.0.0.1`. Taps are synthesized in-process (UITouch +
+IOHIDEvent, as KIF does); SwiftUI controls that ignore synthetic touches are activated through accessibility; text
+goes in through UIKit's text input API. Thresholds live in `inject/SFTuning.h`.
+
+`scripts/golden.mjs` records the reader's output on fixed app states so a change can be diffed before and after.
 
 ```sh
-./build.sh
-SIMCTL_CHILD_DYLD_INSERT_LIBRARIES=$PWD/build/simflick.dylib \
-  xcrun simctl launch --terminate-running-process <udid> <bundle-id>
 T=$(jq -r .session.token ~/.simflick/<udid>.json)
-curl -H "X-Simflick-Token: $T" localhost:8765/screen
+curl -H "X-Simflick-Token: $T" localhost:8765/screen              # ?scan=1 reads lazy lists ahead
 curl -X POST -H "X-Simflick-Token: $T" "localhost:8765/tap?x=220&y=670"
 ```
 
-`SIMCTL_CHILD_SIMFLICK_PORT=<port>` picks another port (one per simulator).
+## Security and caveats
 
-## Status
-
-Prototype. Typing still goes through `axe type`. Next: gesture-only surfaces (e.g. swipeable cards)
-as elements, then a Jev-style decision loop. Relies on private UIKit APIs (simulator only); missing selectors
-are reported in action responses instead of crashing.
+- Simulator only. Touches use private UIKit APIs (as KIF does); if an iOS update removes one, the tap fails and
+  says so instead of crashing the app.
+- The library listens on `127.0.0.1` and only answers requests with the per-launch token from `simflick launch`
+  (`~/.simflick/<udid>.json`, mode 600). Requests from browsers (an `Origin` header) or with a non-local `Host` are
+  rejected; actions need `POST`.
+- Traces in `~/.simflick/runs/` (mode 700) contain on-screen text and typed values.
 
 ## Credits
 

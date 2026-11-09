@@ -15,7 +15,7 @@ const USAGE = `usage: simflick <command>
   tap <n|testID|x,y> [--screen]              tap an element from the last screen
   scroll <S0|testID> <up|down|left|right>    controlled drag inside a scroll area [--amount 0.6]
   swipe x1,y1 x2,y2 [--ms 300] [--fling]     raw drag
-  type "text"                                type into the focused field (via axe for now)
+  type "text"                                type into the focused field (in the app; axe as fallback)
   wait                                       wait until the screen stops changing
   run "<goal>" [--max-steps 60]              let the decision model drive until DONE/BLOCKED
       [--shot] [--full-trace]                end-state screenshot; full screen per step in the trace
